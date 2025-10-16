@@ -1,0 +1,33 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>P8LuaGrammar</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <!-- Some Antlr4BuildTasks versions honor this global property -->
+    <Antlr4GeneratedNamespace>P8LuaGrammar</Antlr4GeneratedNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Antlr4BuildTasks" Version="12.10.0" PrivateAssets="all" />
+    <PackageReference Include="Antlr4.Runtime.Standard" Version="4.13.1" />
+  </ItemGroup>
+
+	<ItemGroup>
+	  <Antlr4 Include="P8Lua.g4" GenerateListener="true" GenerateVisitor="false">
+		<Package>P8LuaGrammar</Package>
+	  </Antlr4>
+
+	  <Antlr4 Include="CombinedLua.g4" GenerateListener="true" GenerateVisitor="false">
+		<Package>P8LuaGrammar</Package>
+	  </Antlr4>
+	</ItemGroup>
+
+  <ItemGroup>
+    <Compile Update="P8Lua.g4.parser.cs"><DependentUpon>P8Lua.g4</DependentUpon></Compile>
+    <Compile Update="P8Lua.g4.lexer.cs"><DependentUpon>P8Lua.g4</DependentUpon></Compile>
+    <Compile Update="CombinedLua.g4.parser.cs"><DependentUpon>CombinedLua.g4</DependentUpon></Compile>
+    <Compile Update="CombinedLua.g4.lexer.cs"><DependentUpon>CombinedLua.g4</DependentUpon></Compile>
+  </ItemGroup>
+</Project>
