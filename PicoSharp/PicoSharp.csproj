@@ -18,13 +18,12 @@
 	</ItemGroup>
 
 	<ItemGroup>
-	  <Reference Include="SlimDX">
-	    <HintPath>libs\SlimDX.dll</HintPath>
-	  </Reference>
-	</ItemGroup>
-
-	<ItemGroup>
+	  <PackageReference Include="SharpDX" Version="4.2.0" />
+	  <PackageReference Include="SharpDX.Desktop" Version="4.2.0" />
+	  <PackageReference Include="SharpDX.Direct3D9" Version="4.2.0" />
 	  <PackageReference Include="SharpDX.DirectInput" Version="4.2.0" />
+	  <PackageReference Include="SharpDX.Mathematics" Version="4.2.0" />
+	  <PackageReference Include="SharpDX.XAudio2" Version="4.2.0" />
 	  <PackageReference Include="Antlr4.Runtime.Standard" Version="4.13.1" />
 	  <PackageReference Include="KeraLua" Version="1.4.7" />
 	  <PackageReference Include="NLua" Version="1.7.6" />
