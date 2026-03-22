@@ -62,14 +62,27 @@ namespace PicoSharp
 
         // Button/glyph symbols: replaced with numbers in code context only.
         // Inside strings they are left as-is for later UTF-8→P8SCII byte conversion.
+        // Three forms per button (longest first):
+        //   1. Latin-1 decomposed: UTF-8 bytes read as Latin-1 chars (from Latin-1 file reading)
+        //   2. Unicode: proper C# chars (from UTF-8 file reading)
+        //   3. P8SCII single byte: raw byte preserved as Latin-1 char
         private static readonly (string search, string codeRepl)[] ButtonReplacements = new[]
         {
+            // Latin-1 decomposed forms (longest - must be tried first)
+            ("\u00F0\u009F\u0085\u00BE\u00EF\u00B8\u008F", "4"), // 🅾️ o  (F0 9F 85 BE EF B8 8F)
+            ("\u00E2\u00AC\u0085\u00EF\u00B8\u008F", "0"),       // ⬅️ left (E2 AC 85 EF B8 8F)
+            ("\u00E2\u009E\u00A1\u00EF\u00B8\u008F", "1"),       // ➡️ right (E2 9E A1 EF B8 8F)
+            ("\u00E2\u00AC\u0086\u00EF\u00B8\u008F", "2"),       // ⬆️ up   (E2 AC 86 EF B8 8F)
+            ("\u00E2\u00AC\u0087\u00EF\u00B8\u008F", "3"),       // ⬇️ down (E2 AC 87 EF B8 8F)
+            ("\u00E2\u009D\u008E", "5"),                          // ❎ x    (E2 9D 8E)
+            // Unicode forms (from UTF-8 file reading)
             ("\u2B05\uFE0F", "0"),        // ⬅️ left
             ("\u27A1\uFE0F", "1"),        // ➡️ right
             ("\u2B06\uFE0F", "2"),        // ⬆️ up
             ("\u2B07\uFE0F", "3"),        // ⬇️ down
             ("\uD83C\uDD7E\uFE0F", "4"), // 🅾️ o
             ("\u274E", "5"),              // ❎ x
+            // P8SCII single-byte forms (raw bytes from .p8 files)
             ("\u008b", "0"),              // P8SCII left
             ("\u0091", "1"),              // P8SCII right
             ("\u0094", "2"),              // P8SCII up
@@ -185,15 +198,7 @@ namespace PicoSharp
                 }
             }
 
-            source = result.ToString();
-
-            // Win1252 encoding fixups (apply globally - these are encoding corrections, not display symbols)
-            byte[] win1252 = { 0xC7, 0xFC, 0xE9, 0xE2, 0xE4, 0xE0, 0xE5, 0xE7, 0xEA, 0xEB, 0xE8, 0xEF, 0xEE, 0xEC, 0xC4, 0xC5, 0xC9, 0xE6, 0xC6, 0xF4, 0xF6, 0xF2, 0xFB, 0xF9, 0xFF, 0xD6 };
-
-            for (int i = 0; i < win1252.Length; i++)
-                source = source.Replace(Convert.ToString((char)(0x80 + i)), Convert.ToString((char)win1252[i]));
-
-            return source;
+            return result.ToString();
         }
 
         /// <summary>
@@ -207,13 +212,40 @@ namespace PicoSharp
             byte[] output = new byte[utf8.Length];
             int readPos = 0, writePos = 0;
 
-            while (readPos < utf8.Length)
+            // First pass: collapse 2-byte UTF-8 sequences for U+0080-U+00FF back
+            // to single bytes. These arise when raw P8SCII bytes (0x80-0xFF) from
+            // the .p8 file are read as Latin-1 chars and then re-encoded to UTF-8.
+            // After collapsing, the bytes match what femto8 sees from fread("rb").
+            byte[] collapsed = new byte[utf8.Length];
+            int cRead = 0, cWrite = 0;
+            while (cRead < utf8.Length)
             {
-                if (utf8[readPos] >= 0x80)
+                if (cRead + 1 < utf8.Length && utf8[cRead] == 0xC2 && utf8[cRead + 1] >= 0x80)
                 {
-                    // Try to match a multi-byte UTF-8 symbol
+                    // U+0080-U+00BF → single byte 0x80-0xBF
+                    collapsed[cWrite++] = utf8[cRead + 1];
+                    cRead += 2;
+                }
+                else if (cRead + 1 < utf8.Length && utf8[cRead] == 0xC3 && utf8[cRead + 1] >= 0x80)
+                {
+                    // U+00C0-U+00FF → single byte 0xC0-0xFF
+                    collapsed[cWrite++] = (byte)(utf8[cRead + 1] + 0x40);
+                    cRead += 2;
+                }
+                else
+                {
+                    collapsed[cWrite++] = utf8[cRead++];
+                }
+            }
+
+            // Second pass: convert multi-byte UTF-8 emoji sequences to single
+            // P8SCII bytes, exactly like femto8's convert_utf8_to_p8scii.
+            while (readPos < cWrite)
+            {
+                if (collapsed[readPos] >= 0x80)
+                {
                     bool matched = false;
-                    int remaining = utf8.Length - readPos;
+                    int remaining = cWrite - readPos;
 
                     for (int i = 0; i < symbols.Length; i++)
                     {
@@ -224,7 +256,7 @@ namespace PicoSharp
                         bool match = true;
                         for (int k = 0; k < sym.length; k++)
                         {
-                            if (utf8[readPos + k] != sym.encoding[k]) { match = false; break; }
+                            if (collapsed[readPos + k] != sym.encoding[k]) { match = false; break; }
                         }
 
                         if (match)
@@ -237,11 +269,11 @@ namespace PicoSharp
                     }
 
                     if (!matched)
-                        output[writePos++] = utf8[readPos++];
+                        output[writePos++] = collapsed[readPos++];
                 }
                 else
                 {
-                    output[writePos++] = utf8[readPos++];
+                    output[writePos++] = collapsed[readPos++];
                 }
             }
 
@@ -296,7 +328,10 @@ namespace PicoSharp
 
         public static void ParseP8(string fileName, byte[] memory, out string luaString)
         {
-            string source = File.ReadAllText(fileName, Encoding.UTF8);
+            // Read as Latin-1 (raw bytes) like femto8's fopen("rb").
+            // This preserves raw P8SCII bytes (0x80-0xFF) that some carts use.
+            // ConvertUtf8ToP8SCII later handles any multi-byte UTF-8 emoji sequences.
+            string source = File.ReadAllText(fileName, Encoding.GetEncoding(28591));
             string[] stringArray = new string[(int)P8Type.Count];
             string[] lineArray = source.Split(new string[] { "\n", }, StringSplitOptions.None);
             P8Type p8Type = P8Type.Header;
