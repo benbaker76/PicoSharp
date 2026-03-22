@@ -511,6 +511,7 @@ namespace PicoSharp
         private double m_time = 0.0;
         private uint m_frames = 0;
         private uint m_actual_fps = 0;
+        private volatile bool m_luaThreadActive = false;
 
         private int m_tline_precision = 13;
 
@@ -611,13 +612,20 @@ namespace PicoSharp
 
                 System.Threading.ThreadPool.QueueUserWorkItem(delegate
                 {
+                    // Enable flip() frame pacing on the background thread.
+                    // Carts using goto loops with explicit flip() need this to
+                    // maintain the target frame rate (like femto8's p8_flip).
+                    m_luaFlipPacing = true;
+
                     // Load the P8SCII byte array directly via KeraLua's LoadBuffer
                     // to bypass NLua's string encoding for the source code.
                     var state = m_lua.State;
                     var loadStatus = state.LoadBuffer(luaBytes, "cart");
                     if (loadStatus == KeraLua.LuaStatus.OK)
                     {
+                        m_luaThreadActive = true;
                         int pcallResult = (int)state.PCall(0, -1, 0);
+                        m_luaThreadActive = false;
                         if (pcallResult != 0)
                         {
                             string err = state.ToString(-1);
@@ -684,6 +692,11 @@ namespace PicoSharp
             m_accumulator = 0.0;
             m_frames++;
 
+            // For goto-loop carts: the background thread owns the Lua state
+            // and drives rendering via flip(). Don't touch Lua from here.
+            if (m_luaThreadActive)
+                return;
+
             if (m_lua != null)
             {
                 var updateFunction60 = m_lua["_update60"] as LuaFunction;
@@ -698,16 +711,6 @@ namespace PicoSharp
                 if (drawFunction != null)
                     drawFunction.Call();
             }
-
-            //rectfill((int)Math.Round(width), (int)Math.Round(width), (int)Math.Round(128 - width), (int)Math.Round(128 - width), 1);
-            //rect((int)Math.Round(width), (int)Math.Round(width), (int)Math.Round(128 - width), (int)Math.Round(128 - width), 2);
-            //circfill(64, 64, (int)Math.Round(64 - width), 3);
-            //circ(64, 64, (int)Math.Round(64 - width), 4);
-            //line(0, 0, (int)Math.Round(128 - width), 128, 5);
-            //print(String.Format("{0:f2}", m_time), 0, 0, 7);
-
-            if (++width == 128)
-                width = 0;
 
             flip();
         }
@@ -803,6 +806,9 @@ namespace PicoSharp
         }
 
         // flip()
+        private bool m_luaFlipPacing = false;
+        private Stopwatch m_flipStopwatch = Stopwatch.StartNew();
+
         public void flip()
         {
             for (int y = 0; y < P8_HEIGHT; y++)
@@ -816,6 +822,18 @@ namespace PicoSharp
 
                     m_pixelArray[x + (y * 128)] = (int)color;
                 }
+            }
+
+            // Frame pacing for carts that use goto loops with explicit flip().
+            // Like femto8's p8_flip(): sleep to maintain target FPS.
+            if (m_luaFlipPacing)
+            {
+                int targetMs = (int)(1000.0 / m_fps);
+                int elapsedMs = (int)m_flipStopwatch.ElapsedMilliseconds;
+                int sleepMs = targetMs - elapsedMs;
+                if (sleepMs > 0)
+                    System.Threading.Thread.Sleep(sleepMs);
+                m_flipStopwatch.Restart();
             }
         }
 
