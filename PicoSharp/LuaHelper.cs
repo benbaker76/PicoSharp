@@ -420,12 +420,22 @@ namespace PicoSharp
             return left;
         }
 
+        private int gfx_addr_remap(int location)
+        {
+            if (location == MEMORY_SPRITES)
+                return m_memory[MEMORY_SPRITE_PHYS] << 8;
+            else if (location == MEMORY_SCREEN)
+                return m_memory[MEMORY_SCREEN_PHYS] << 8;
+            else
+                return location;
+        }
+
         public byte gfx_addr_get(int x, int y, byte[] array, int location, int size)
         {
             if (x < 0 || y < 0 || x > P8_WIDTH || y > P8_HEIGHT)
                 return 0;
 
-            int offset = location + (x >> 1) + y * 64;
+            int offset = gfx_addr_remap(location) + (x >> 1) + y * 64;
 
             return (byte)(Tools.IsEven(x) ? array[offset] & 0xF : array[offset] >> 4);
         }
@@ -450,7 +460,7 @@ namespace PicoSharp
         {
             if (x < 0 || y < 0 || x > P8_WIDTH || y > P8_HEIGHT)
                 return;
-            int offset = location + (x >> 1) + y * 64;
+            int offset = gfx_addr_remap(location) + (x >> 1) + y * 64;
 
             byte color = (col == -1 ? pencolor_get() : color_get(PaletteType.Draw, col));
             array[offset] = (byte)(Tools.IsEven(x) ? (array[offset] & 0xF0) | (color & 0xF) : (color << 4) | (array[offset] & 0xF));
@@ -463,15 +473,17 @@ namespace PicoSharp
 
         public void camera_get(out int x, out int y)
         {
-            x = (m_memory[MEMORY_CAMERA + 1] << 8) | m_memory[MEMORY_CAMERA];
-            y = (m_memory[MEMORY_CAMERA + 3] << 8) | m_memory[MEMORY_CAMERA + 2];
+            short cx = (short)((m_memory[MEMORY_CAMERA + 1] << 8) | m_memory[MEMORY_CAMERA]);
+            short cy = (short)((m_memory[MEMORY_CAMERA + 3] << 8) | m_memory[MEMORY_CAMERA + 2]);
+            x = cx;
+            y = cy;
         }
 
         public void camera_set(int x, int y)
         {
-            m_memory[MEMORY_CAMERA] = (byte)(x & 0xF);
+            m_memory[MEMORY_CAMERA] = (byte)(x & 0xff);
             m_memory[MEMORY_CAMERA + 1] = (byte)(x >> 8);
-            m_memory[MEMORY_CAMERA + 2] = (byte)(y & 0xF);
+            m_memory[MEMORY_CAMERA + 2] = (byte)(y & 0xff);
             m_memory[MEMORY_CAMERA + 3] = (byte)(y >> 8);
         }
 
@@ -561,48 +573,58 @@ namespace PicoSharp
         public void update_buttons(int index, int button, bool state)
         {
             byte mask = m_buttons[index];
+            mask = (byte)(state ? mask | (1 << button) : mask & ~(1 << button));
+            m_buttons[index] = mask;
+            m_memory[MEMORY_BUTTON_STATE + index] = (byte)(mask & 0xff);
+        }
 
-            switch (button)
+        public int map_cell_addr(int celx, int cely)
+        {
+            if (celx < 0 || cely < 0)
+                return 0;
+
+            byte map_start = m_memory[MEMORY_MAP_START];
+            if ((map_start >= 0x10 && map_start < 0x20) ||
+                (map_start >= 0x30 && map_start < 0x3f))
+                return 0;
+            if (map_start < 0x10 ||
+                (map_start >= 0x40 && map_start < 0x80))
+                map_start = 0x20;
+            if (cely >= 32 && map_start < 0x80)
             {
-                case 0:
-                    mask = (byte)(state ? mask | (byte)ButtonMask.Left : mask & ~(byte)ButtonMask.Left);
-                    break;
-                case 1:
-                    mask = (byte)(state ? mask | (byte)ButtonMask.Right : mask & ~(byte)ButtonMask.Right);
-                    break;
-                case 2:
-                    mask = (byte)(state ? mask | (byte)ButtonMask.Up : mask & ~(byte)ButtonMask.Up);
-                    break;
-                case 3:
-                    mask = (byte)(state ? mask | (byte)ButtonMask.Down : mask & ~(byte)ButtonMask.Down);
-                    break;
-                case 4:
-                    mask = (byte)(state ? mask | (byte)ButtonMask.Action1 : mask & ~(byte)ButtonMask.Action1);
-                    break;
-                case 5:
-                    mask = (byte)(state ? mask | (byte)ButtonMask.Action2 : mask & ~(byte)ButtonMask.Action2);
-                    break;
-                default:
-                    break;
+                map_start = 0x10;
+                cely -= 32;
             }
 
-            m_buttons[index] = mask;
+            int map_width = m_memory[MEMORY_MAP_WIDTH];
+            if (map_width == 0)
+                map_width = 128;
+
+            int map_base = map_start << 8;
+            int offset = celx + cely * map_width;
+            int address = map_base + offset;
+
+            if (address < 0x1000 || address >= 0x10000 ||
+                (address >= 0x3000 && address < 0x8000))
+                return 0;
+
+            return address;
         }
 
         public byte map_get(int celx, int cely)
         {
-            if (cely < 32)
-                return m_memory[MEMORY_MAP + celx + cely * P8_WIDTH];
-            else
-                return m_memory[MEMORY_SPRITES_MAP + celx + (cely - 32) * P8_WIDTH];
+            int address = map_cell_addr(celx, cely);
+            if (address == 0)
+                return 0;
+            return m_memory[address];
         }
 
         public void map_set(int celx, int cely, int snum)
         {
-            if (cely < 32)
-                m_memory[MEMORY_MAP + celx + cely * P8_WIDTH] = (byte)snum;
-            else
-                m_memory[MEMORY_SPRITES_MAP + celx + (cely - 32) * P8_WIDTH] = (byte)snum;
+            int address = map_cell_addr(celx, cely);
+            if (address == 0)
+                return;
+            m_memory[address] = (byte)snum;
         }
 
         public void reset_color()

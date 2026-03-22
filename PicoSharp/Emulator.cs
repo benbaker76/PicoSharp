@@ -66,6 +66,16 @@ namespace PicoSharp
         public const int MEMORY_TLINE_OFFSET_Y = 0x5f3b;
         public const int MEMORY_LINE_X = 0x5f3c;
         public const int MEMORY_LINE_Y = 0x5f3e;
+        public const int MEMORY_RNG_STATE = 0x5f44;
+        public const int MEMORY_BUTTON_STATE = 0x5f4c;
+        public const int MEMORY_SPRITE_PHYS = 0x5f54;
+        public const int MEMORY_SCREEN_PHYS = 0x5f55;
+        public const int MEMORY_MAP_START = 0x5f56;
+        public const int MEMORY_MAP_WIDTH = 0x5f57;
+        public const int MEMORY_TEXT_ATTRS = 0x5f58;
+        public const int MEMORY_SGET_DEFAULT = 0x5f59;
+        public const int MEMORY_MGET_DEFAULT = 0x5f5a;
+        public const int MEMORY_PGET_DEFAULT = 0x5f5b;
         public const int MEMORY_AUTO_REPEAT_DELAY = 0x5f5c;
         public const int MEMORY_AUTO_REPEAT_INTERVAL = 0x5f5d;
         public const int MEMORY_PALETTE_SECONDARY = 0x5f60;
@@ -76,7 +86,36 @@ namespace PicoSharp
         public const int SPRITE_WIDTH = 8;
         public const int SPRITE_HEIGHT = 8;
         public const int BUTTON_COUNT = 6;
+        public const int BUTTON_INTERNAL_COUNT = 13;
         public const int PLAYER_COUNT = 2;
+
+        public const int DEFAULT_AUTO_REPEAT_DELAY = 15;
+        public const int DEFAULT_AUTO_REPEAT_INTERVAL = 4;
+
+        public const int STAT_MEM_USAGE = 0;
+        public const int STAT_CPU_USAGE = 1;
+        public const int STAT_SYSTEM_CPU_USAGE = 2;
+        public const int STAT_PARAM = 6;
+        public const int STAT_FRAMERATE = 7;
+        public const int STAT_TARGET_FRAMERATE = 8;
+        public const int STAT_KEY_PRESSED = 30;
+        public const int STAT_KEY_NAME = 31;
+        public const int STAT_MOUSE_X = 32;
+        public const int STAT_MOUSE_Y = 33;
+        public const int STAT_MOUSE_BUTTONS = 34;
+        public const int STAT_MOUSE_WHEEL = 36;
+        public const int STAT_YEAR_UTC = 80;
+        public const int STAT_MONTH_UTC = 81;
+        public const int STAT_DAY_UTC = 82;
+        public const int STAT_HOUR_UTC = 83;
+        public const int STAT_MINUTE_UTC = 84;
+        public const int STAT_SECOND_UTC = 85;
+        public const int STAT_YEAR = 90;
+        public const int STAT_MONTH = 91;
+        public const int STAT_DAY = 92;
+        public const int STAT_HOUR = 93;
+        public const int STAT_MINUTE = 94;
+        public const int STAT_SECOND = 95;
 
         public const int SAMPLE_RATE = 44100;
         public const int MAX_VOLUME = 4096;
@@ -346,6 +385,7 @@ namespace PicoSharp
             "spr",
             "sset",
             "sspr",
+            "tline",
             // ****************************************************************
             // *** Tables ***
             // ****************************************************************
@@ -383,7 +423,7 @@ namespace PicoSharp
             "poke",
             "poke2",
             "poke4",
-            // "reload",
+            "reload",
             // ****************************************************************
             // *** Math ***
             // ****************************************************************
@@ -408,7 +448,7 @@ namespace PicoSharp
             "shr",
             "sin",
             "sqrt",
-            // "srand",
+            "srand",
             // ****************************************************************
             // *** Cartridge data ***
             // ****************************************************************
@@ -440,7 +480,7 @@ namespace PicoSharp
             // *** System ***
             // ****************************************************************
             "menuitem",
-            // "extcmd",
+            "extcmd",
             // ****************************************************************
             // *** Debugging ***
             // ****************************************************************
@@ -456,6 +496,7 @@ namespace PicoSharp
 
         private string m_fontMap = "▮■□⁙⁘‖◀▶「」¥•、。゛゜ !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~○█▒🐱⬇️░✽●♥☉웃⌂⬅️😐♪🅾️◆…➡️★⧗⬆️ˇ∧❎▤▥あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをんっゃゅょアイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲンッャュョ◜◝";
         public byte[] m_memory;
+        private byte[] m_cart_memory;
         private byte[] m_font;
 
         private double m_fps = 30.0;
@@ -468,6 +509,8 @@ namespace PicoSharp
 
         private double m_accumulator = 0.0;
         private double m_time = 0.0;
+        private uint m_frames = 0;
+        private uint m_actual_fps = 0;
 
         private int m_tline_precision = 13;
 
@@ -521,8 +564,19 @@ namespace PicoSharp
 
             P8Parser.Parse(fileName, m_memory, out luaString);
 
+            // Save a copy of cart memory for reload()
+            m_cart_memory = new byte[CART_MEMORY_SIZE];
+            Buffer.BlockCopy(m_memory, 0, m_cart_memory, 0, CART_MEMORY_SIZE);
+
+            // Initialize physical address registers so addr_remap/gfx_addr_remap
+            // map to the correct default locations (sprites=0x00, screen=0x60)
+            m_memory[MEMORY_SPRITE_PHYS] = 0x00;
+            m_memory[MEMORY_SCREEN_PHYS] = 0x60;
+            m_memory[MEMORY_MAP_START] = 0x20;
+
             reset_color();
             clear_screen(0);
+            srand(m_random.Next());
 
             if (luaString != null)
             {
@@ -566,6 +620,15 @@ namespace PicoSharp
             m_lua.RegisterFunction(name, m_luaBridge, methodInfo);
         }
 
+        private int addr_remap(int address)
+        {
+            if (address >= 0x0000 && address < 0x2000)
+                address = (m_memory[MEMORY_SPRITE_PHYS] << 8) | (address & 0x1fff);
+            else if (address >= 0x6000 && address < 0x8000)
+                address = (m_memory[MEMORY_SCREEN_PHYS] << 8) | (address & 0x1fff);
+            return address;
+        }
+
         private float width = 0;
 
         public void Update(double elapsedTime)
@@ -582,6 +645,7 @@ namespace PicoSharp
             m_cartData.Flush();
 
             m_accumulator = 0.0;
+            m_frames++;
 
             if (m_lua != null)
             {
@@ -812,7 +876,9 @@ namespace PicoSharp
                 if (p == -1)
                     p = 0;
 
-                color_set((PaletteType)p, c0, c1);
+                byte old_val = color_get((PaletteType)p, c0);
+                byte new_val = (byte)((c1 & 0x8f) | (old_val & 0x10));
+                color_set((PaletteType)p, c0, new_val);
                 return;
             }
         }
@@ -849,7 +915,14 @@ namespace PicoSharp
         // pget(x, y)
         public byte pget(int x, int y)
         {
-            return gfx_get(x, y, MEMORY_SCREEN, MEMORY_SCREEN_SIZE);
+            int x0, y0, x1, y1;
+            clip_get(out x0, out y0, out x1, out y1);
+
+            if (x >= x0 && y >= y0 && x < x1 && y < y1)
+                return gfx_get(x, y, MEMORY_SCREEN, MEMORY_SCREEN_SIZE);
+
+            int default_val = (m_memory[MEMORY_MISCFLAGS] & 0x10) != 0 ? m_memory[MEMORY_PGET_DEFAULT] : 0;
+            return (byte)default_val;
         }
 
         // print(str, [x,] [y,] [col])
@@ -956,7 +1029,8 @@ namespace PicoSharp
             if (x >= 0 && y >= 0 && x < P8_WIDTH && y < P8_HEIGHT)
                 return gfx_get(x, y, MEMORY_SPRITES, MEMORY_SPRITES_SIZE);
 
-            return 0;
+            int default_val = (m_memory[MEMORY_MISCFLAGS] & 0x10) != 0 ? m_memory[MEMORY_SGET_DEFAULT] : 0;
+            return (byte)default_val;
         }
 
         static float val = 0.0f;
@@ -1160,11 +1234,11 @@ namespace PicoSharp
         }
 
         // sfx(n, [channel,] [offset,] [length])
-        public void sfx(int n, int channel = 0, int offset = 0, int length = 0)
+        public void sfx(int n, int channel = -1, int offset = 0, int length = 32)
         {
             lock (m_soundQueue)
             {
-                m_soundQueue.Enqueue(new SoundCommand(n, channel, offset, m_memory[MEMORY_SFX + length * 64]));
+                m_soundQueue.Enqueue(new SoundCommand(n, channel, offset, length));
             }
         }
 
@@ -1175,17 +1249,42 @@ namespace PicoSharp
         // map(celx, cely, sx, sy, celw, celh, [layer])
         public int map(int celx, int cely, int sx, int sy, int celw = -1, int celh = -1, int layer = 0)
         {
-            celw = celw != -1 ? celw : P8_WIDTH / SPRITE_WIDTH;
-            celh = celh != -1 ? celh : P8_HEIGHT / SPRITE_HEIGHT;
+            int default_celw = m_memory[MEMORY_MAP_WIDTH];
+            if (default_celw == 0) default_celw = 128;
+            int map_start = m_memory[MEMORY_MAP_START];
+            int max_map_cells = (map_start >= 0x80) ? (0x10000 - (map_start << 8)) : 0x2000;
+            int default_celh = (default_celw > 0) ? (max_map_cells / default_celw) : 64;
 
-            for (int y = 0; y < celh; y++)
+            celw = celw != -1 ? celw : default_celw;
+            celh = celh != -1 ? celh : default_celh;
+
+            // Visible-cell optimization: only draw cells that overlap the clip rect
+            int cam_x, cam_y;
+            camera_get(out cam_x, out cam_y);
+            int clip_x0, clip_y0, clip_x1, clip_y1;
+            clip_get(out clip_x0, out clip_y0, out clip_x1, out clip_y1);
+
+            int screen_x0 = cam_x + clip_x0;
+            int screen_y0 = cam_y + clip_y0;
+            int screen_x1 = cam_x + clip_x1;
+            int screen_y1 = cam_y + clip_y1;
+
+            int start_x = Math.Max(0, (screen_x0 - sx) / SPRITE_WIDTH);
+            int start_y = Math.Max(0, (screen_y0 - sy) / SPRITE_HEIGHT);
+            int end_x = Math.Min(celw, (screen_x1 - sx + SPRITE_WIDTH - 1) / SPRITE_WIDTH);
+            int end_y = Math.Min(celh, (screen_y1 - sy + SPRITE_HEIGHT - 1) / SPRITE_HEIGHT);
+
+            bool sprite_0_opaque = (m_memory[MEMORY_MISCFLAGS] & 0x8) != 0;
+
+            for (int y = start_y; y < end_y; y++)
             {
-                for (int x = 0; x < celw; x++)
+                for (int x = start_x; x < end_x; x++)
                 {
                     byte index = map_get(celx + x, cely + y);
                     byte sprite_flags = m_memory[MEMORY_SPRITEFLAGS + index];
+                    bool should_draw = (index != 0 || sprite_0_opaque) && (layer == 0 || ((layer & sprite_flags) == layer));
 
-                    if (index != 0 && (layer == 0 || ((layer & sprite_flags) == layer)))
+                    if (should_draw)
                     {
                         int left = sx + x * SPRITE_WIDTH;
                         int top = sy + y * SPRITE_HEIGHT;
@@ -1200,7 +1299,13 @@ namespace PicoSharp
         // mget(celx, cely)
         public byte mget(int celx, int cely)
         {
-            return map_get(celx, cely);
+            int address = map_cell_addr(celx, cely);
+            if (address == 0)
+            {
+                int default_val = (m_memory[MEMORY_MISCFLAGS] & 0x10) != 0 ? m_memory[MEMORY_MGET_DEFAULT] : 0;
+                return (byte)default_val;
+            }
+            return m_memory[address];
         }
 
         // mset(celx, cely, snum)
@@ -1226,7 +1331,16 @@ namespace PicoSharp
             if (destaddr < 0 || (destaddr + len) > (1 << 16))
                 return 0;
 
-            Array.Copy(m_memory, sourceaddr, m_memory, destaddr, len);
+            while (len > 0)
+            {
+                int chunk = Math.Min(Math.Min(len, 0x2000 - (sourceaddr & 0x1fff)), 0x2000 - (destaddr & 0x1fff));
+                int destaddr1 = addr_remap(destaddr);
+                int sourceaddr1 = addr_remap(sourceaddr);
+                Buffer.BlockCopy(m_memory, sourceaddr1, m_memory, destaddr1, chunk);
+                destaddr += chunk;
+                sourceaddr += chunk;
+                len -= chunk;
+            }
 
             return 0;
         }
@@ -1234,36 +1348,36 @@ namespace PicoSharp
         // memset(destaddr, val, len)
         public void memset(int destaddr, int val, int len)
         {
-            Array.Clear(m_memory, destaddr, len);
+            while (len > 0)
+            {
+                int chunk = Math.Min(len, 0x2000 - (destaddr & 0x1fff));
+                int destaddr1 = addr_remap(destaddr);
+                for (int i = 0; i < chunk; i++)
+                    m_memory[destaddr1 + i] = (byte)val;
+                destaddr += chunk;
+                len -= chunk;
+            }
         }
 
         // peek(addr, [n])
         public byte peek(int addr, int n = 1)
         {
-            var dst = new byte[n];
-            Buffer.BlockCopy(m_memory, addr, dst, 0, n);
-            return dst[0];
+            addr = addr_remap(addr);
+            return m_memory[addr];
         }
 
         // peek2(addr, [n])
         public short peek2(int addr, int n = 1)
         {
-            var dst = new short[n];
-            for (int i = 0; i < n; i++)
-                dst[i] = (short)(m_memory[addr + i * 2 + 1] << 8 | m_memory[addr + i * 2]);
-            return dst[0];
+            addr = addr_remap(addr);
+            return (short)(m_memory[addr + 1] << 8 | m_memory[addr]);
         }
 
         // peek4(addr, [n])
         public int peek4(int addr, int n = 1)
         {
-            var dst = new int[n];
-            for (int i = 0; i < n; i++)
-            {
-                int o = addr + i * 4;
-                dst[i] = (int)(m_memory[o + 3] << 24 | m_memory[o + 2] << 16 | m_memory[o + 1] << 8 | m_memory[o]);
-            }
-            return dst[0];
+            addr = addr_remap(addr);
+            return (int)(m_memory[addr + 3] << 24 | m_memory[addr + 2] << 16 | m_memory[addr + 1] << 8 | m_memory[addr]);
         }
 
         // poke(addr, val1, ...)
@@ -1272,12 +1386,13 @@ namespace PicoSharp
             if (values == null || values.Length == 0)
                 return;
 
-            Buffer.BlockCopy(values, 0, m_memory, addr, values.Length);
+            addr = addr_remap(addr);
 
-            // cartdata flush window check (inclusive range like the C code)
-            int end = addr + values.Length - 1;
-            //if (addr >= MEMORY_CARTDATA && end <= MEMORY_CARTDATA + MEMORY_CARTDATA_SIZE)
-            //    p8_delayed_flush_cartdata();
+            for (int i = 0; i < values.Length; i++)
+                m_memory[addr + i] = values[i];
+
+            if (addr >= MEMORY_CARTDATA && addr + values.Length <= MEMORY_CARTDATA + MEMORY_CARTDATA_SIZE)
+                m_cartData.SetDelayedFlush();
         }
 
         // poke2(addr, val1, ...)
@@ -1285,6 +1400,8 @@ namespace PicoSharp
         {
             if (values == null || values.Length == 0)
                 return;
+
+            addr = addr_remap(addr);
 
             for (int i = 0; i < values.Length; i++)
             {
@@ -1294,9 +1411,8 @@ namespace PicoSharp
                 m_memory[o + 1] = (byte)(v >> 8);
             }
 
-            int end = addr + values.Length * 2; // C code checked addr + 2 <= ...
-            //if (addr >= MEMORY_CARTDATA && end <= MEMORY_CARTDATA + MEMORY_CARTDATA_SIZE)
-            //    p8_delayed_flush_cartdata();
+            if (addr >= MEMORY_CARTDATA && addr + values.Length * 2 <= MEMORY_CARTDATA + MEMORY_CARTDATA_SIZE)
+                m_cartData.SetDelayedFlush();
         }
 
         // poke4(addr, val1, ...)
@@ -1304,6 +1420,8 @@ namespace PicoSharp
         {
             if (values == null || values.Length == 0)
                 return;
+
+            addr = addr_remap(addr);
 
             for (int i = 0; i < values.Length; i++)
             {
@@ -1315,12 +1433,17 @@ namespace PicoSharp
                 m_memory[o + 3] = (byte)((v >> 24) & 0xFF);
             }
 
-            int end = addr + values.Length * 4; // C code checked addr + 4 <= ...
-            //if (addr >= MEMORY_CARTDATA && end <= MEMORY_CARTDATA + MEMORY_CARTDATA_SIZE)
-            //    p8_delayed_flush_cartdata();
+            if (addr >= MEMORY_CARTDATA && addr + values.Length * 4 <= MEMORY_CARTDATA + MEMORY_CARTDATA_SIZE)
+                m_cartData.SetDelayedFlush();
         }
 
-        // reload(destaddr, sourceaddr, len, [filename]) 
+        // reload(destaddr, sourceaddr, len, [filename])
+        public void reload(int destaddr, int sourceaddr, int len)
+        {
+            destaddr = addr_remap(destaddr);
+            if (m_cart_memory != null && destaddr >= 0 && destaddr + len <= 0x10000 && sourceaddr >= 0 && sourceaddr + len <= CART_MEMORY_SIZE)
+                Buffer.BlockCopy(m_cart_memory, sourceaddr, m_memory, destaddr, len);
+        }
 
         // ****************************************************************
         // *** Math ***
@@ -1417,7 +1540,25 @@ namespace PicoSharp
         // rnd(max)
         public float rnd(float max)
         {
-            return m_random.NextSingle() * max;
+            uint hi = (uint)(m_memory[MEMORY_RNG_STATE] | (m_memory[MEMORY_RNG_STATE + 1] << 8) |
+                      (m_memory[MEMORY_RNG_STATE + 2] << 16) | (m_memory[MEMORY_RNG_STATE + 3] << 24));
+            uint lo = (uint)(m_memory[MEMORY_RNG_STATE + 4] | (m_memory[MEMORY_RNG_STATE + 5] << 8) |
+                      (m_memory[MEMORY_RNG_STATE + 6] << 16) | (m_memory[MEMORY_RNG_STATE + 7] << 24));
+
+            hi = (hi << 16) | (hi >> 16);
+            hi += lo;
+            lo += hi;
+
+            m_memory[MEMORY_RNG_STATE] = (byte)(hi & 0xFF);
+            m_memory[MEMORY_RNG_STATE + 1] = (byte)((hi >> 8) & 0xFF);
+            m_memory[MEMORY_RNG_STATE + 2] = (byte)((hi >> 16) & 0xFF);
+            m_memory[MEMORY_RNG_STATE + 3] = (byte)((hi >> 24) & 0xFF);
+            m_memory[MEMORY_RNG_STATE + 4] = (byte)(lo & 0xFF);
+            m_memory[MEMORY_RNG_STATE + 5] = (byte)((lo >> 8) & 0xFF);
+            m_memory[MEMORY_RNG_STATE + 6] = (byte)((lo >> 16) & 0xFF);
+            m_memory[MEMORY_RNG_STATE + 7] = (byte)((lo >> 24) & 0xFF);
+
+            return (hi >> 16) * max / 65536.0f;
         }
 
         // rotl(num, bits)
@@ -1463,6 +1604,18 @@ namespace PicoSharp
         }
 
         // srand(val)
+        public void srand(int val)
+        {
+            uint seed = (uint)val;
+            m_memory[MEMORY_RNG_STATE] = (byte)(seed & 0xFF);
+            m_memory[MEMORY_RNG_STATE + 1] = (byte)((seed >> 8) & 0xFF);
+            m_memory[MEMORY_RNG_STATE + 2] = (byte)((seed >> 16) & 0xFF);
+            m_memory[MEMORY_RNG_STATE + 3] = (byte)((seed >> 24) & 0xFF);
+            m_memory[MEMORY_RNG_STATE + 4] = 0;
+            m_memory[MEMORY_RNG_STATE + 5] = 0;
+            m_memory[MEMORY_RNG_STATE + 6] = 0;
+            m_memory[MEMORY_RNG_STATE + 7] = 0;
+        }
 
         // ****************************************************************
         // *** Cartridge data ***
@@ -1521,10 +1674,26 @@ namespace PicoSharp
         // sub(str, from, [to])
         public string sub(string str, int start, int end = -1)
         {
-            if (end == -1)
-                return str.Substring(start);
+            if (str == null) return "";
+            int str_len = str.Length;
 
-            return str.Substring(start, end - start);
+            if (start < 1) start = 1;
+            if (start > str_len + 1) start = str_len + 1;
+
+            if (end == -1)
+            {
+                int len = str_len - start + 1;
+                if (len < 0) len = 0;
+                return str.Substring(start - 1, len);
+            }
+
+            if (end < 0) end = str_len + end + 1;
+            if (end < 1) end = 1;
+            if (end > str_len) end = str_len;
+
+            int length = end - start + 1;
+            if (length < 0) length = 0;
+            return str.Substring(start - 1, length);
         }
 
         // tonum(str)
@@ -1544,7 +1713,7 @@ namespace PicoSharp
         // time()
         public float time()
         {
-            return (float)m_time;
+            return (float)m_frames / (float)m_fps;
         }
 
         // ****************************************************************
@@ -1556,7 +1725,11 @@ namespace PicoSharp
         {
         }
 
-        // extcmd(cmd) 
+        // extcmd(cmd)
+        public void extcmd(string cmd)
+        {
+            // stub - pause/reset/shutdown not supported in this environment
+        }
 
         // ****************************************************************
         // *** Debugging ***
@@ -1566,12 +1739,53 @@ namespace PicoSharp
         // printh(str, [filename], [overwrite])
         public void printh(string str = null, string filename = null, bool overwrite = false)
         {
+            Debug.WriteLine(str ?? "");
         }
 
         // stat(n)
-        public int stat(int n)
+        public object stat(int n)
         {
-            return 0;
+            switch (n)
+            {
+                case STAT_FRAMERATE:
+                    return (int)m_actual_fps;
+                case STAT_TARGET_FRAMERATE:
+                    return (int)m_fps;
+                case STAT_MOUSE_X:
+                    return m_mouse.X;
+                case STAT_MOUSE_Y:
+                    return m_mouse.Y;
+                case STAT_MOUSE_BUTTONS:
+                    return 0;
+                case STAT_MOUSE_WHEEL:
+                    return 0;
+                case STAT_YEAR:
+                    return DateTime.Now.Year;
+                case STAT_MONTH:
+                    return DateTime.Now.Month;
+                case STAT_DAY:
+                    return DateTime.Now.Day;
+                case STAT_HOUR:
+                    return DateTime.Now.Hour;
+                case STAT_MINUTE:
+                    return DateTime.Now.Minute;
+                case STAT_SECOND:
+                    return DateTime.Now.Second;
+                case STAT_YEAR_UTC:
+                    return DateTime.UtcNow.Year;
+                case STAT_MONTH_UTC:
+                    return DateTime.UtcNow.Month;
+                case STAT_DAY_UTC:
+                    return DateTime.UtcNow.Day;
+                case STAT_HOUR_UTC:
+                    return DateTime.UtcNow.Hour;
+                case STAT_MINUTE_UTC:
+                    return DateTime.UtcNow.Minute;
+                case STAT_SECOND_UTC:
+                    return DateTime.UtcNow.Second;
+                default:
+                    return 0;
+            }
         }
 
         // stop() (undocumented)

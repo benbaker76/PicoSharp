@@ -482,9 +482,9 @@ namespace PicoSharp
         public void sfx(object _n = null, object _channel = null, object _offset = null, object _length = null)
         {
             int n = (_n == null ? 0 : Convert.ToInt32(_n));
-            int channel = (_channel == null ? 0 : Convert.ToInt32(_channel));
+            int channel = (_channel == null ? -1 : Convert.ToInt32(_channel));
             int offset = (_offset == null ? 0 : Convert.ToInt32(_offset));
-            int length = (_length == null ? 0 : Convert.ToInt32(_length));
+            int length = (_length == null ? 32 : Convert.ToInt32(_length));
 
             m_emulator.sfx(n, channel, offset, length);
         }
@@ -602,7 +602,15 @@ namespace PicoSharp
             m_emulator.poke4(addr, new int[] { (int)val });
         }
 
-        // reload(destaddr, sourceaddr, len, [filename]) 
+        // reload(destaddr, sourceaddr, len, [filename])
+        public void reload(object _destaddr = null, object _sourceaddr = null, object _len = null)
+        {
+            int destaddr = (_destaddr == null ? 0 : Convert.ToInt32(_destaddr));
+            int sourceaddr = (_sourceaddr == null ? 0 : Convert.ToInt32(_sourceaddr));
+            int len = (_len == null ? 0 : Convert.ToInt32(_len));
+
+            m_emulator.reload(destaddr, sourceaddr, len);
+        }
 
         // ****************************************************************
         // *** Math ***
@@ -790,6 +798,11 @@ namespace PicoSharp
         }
 
         // srand(val)
+        public void srand(object _val = null)
+        {
+            int val = (_val == null ? 0 : Convert.ToInt32(_val));
+            m_emulator.srand(val);
+        }
 
         // ****************************************************************
         // *** Cartridge data ***
@@ -887,7 +900,12 @@ namespace PicoSharp
             m_emulator.menuitem(index, label, _callback);
         }
 
-        // extcmd(cmd) 
+        // extcmd(cmd)
+        public void extcmd(object _cmd = null)
+        {
+            string cmd = (_cmd == null ? "" : _cmd.ToString());
+            m_emulator.extcmd(cmd);
+        }
 
         // ****************************************************************
         // *** Debugging ***
@@ -905,7 +923,7 @@ namespace PicoSharp
         }
 
         // stat(n)
-        public int stat(object _n = null)
+        public object stat(object _n = null)
         {
             int n = (_n == null ? 0 : Convert.ToInt32(_n));
 
