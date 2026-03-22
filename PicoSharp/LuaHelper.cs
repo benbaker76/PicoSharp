@@ -382,7 +382,10 @@ namespace PicoSharp
             if (str == null)
                 str = string.Empty;
 
-            byte[] bytes = Encoding.UTF8.GetBytes(str);
+            // With Latin-1 encoding, NLua marshals P8SCII bytes (0x80-0xFF) as
+            // C# chars with the same code point. Convert to Latin-1 bytes so each
+            // P8SCII character is a single byte (matching femto8's byte-level rendering).
+            byte[] bytes = Encoding.GetEncoding(28591).GetBytes(str);
 
             int left = 0;
             int str_len = bytes.Length;
@@ -394,21 +397,18 @@ namespace PicoSharp
 
                 if (character >= 0x20 && character < 0x7F)
                 {
+                    // Standard ASCII printable
+                    index = character;
+                }
+                else if (character >= 0x80)
+                {
+                    // P8SCII glyph: direct index into font
                     index = character;
                 }
                 else
                 {
-                    int symbol_length;
-                    index = get_p8_symbol(bytes, i, str_len - i, out symbol_length);
-
-                    if (index != -1)
-                    {
-                        i += symbol_length - 1;
-                    }
-                    else
-                    {
-                        index = character;
-                    }
+                    // Control characters (0x00-0x1F) - skip for now
+                    continue;
                 }
 
                 if (index >= 0)

@@ -582,19 +582,56 @@ namespace PicoSharp
             {
                 string luaApiString = Tools.GetEmbeddedResourceAsString("LuaApi.txt");
                 string luaCleanString = P8Parser.CleanLua(luaApiString + luaString, true);
-                //string luaCleanString = P8.CleanLua(luaString, true);
+
+                // Convert remaining UTF-8 emoji sequences (in strings) to single P8SCII bytes,
+                // exactly like femto8's convert_utf8_to_p8scii.
+                var p8symbols = new P8Parser.P8Symbol[m_p8Symbols.Length];
+                for (int i = 0; i < m_p8Symbols.Length; i++)
+                    p8symbols[i] = new P8Parser.P8Symbol { encoding = m_p8Symbols[i].encoding, length = m_p8Symbols[i].length, index = m_p8Symbols[i].index };
+                byte[] luaBytes = P8Parser.ConvertUtf8ToP8SCII(luaCleanString, p8symbols);
 
                 m_lua = new Lua();
-                //m_lua.State.Encoding = Encoding.UTF8;
+                // Use Latin-1 so bytes 0x80-0xFF survive the C# ↔ Lua round trip.
+                // KeraLua defaults to ASCII which replaces anything >0x7F with '?'.
+                m_lua.State.Encoding = Encoding.GetEncoding(28591); // ISO-8859-1
                 m_lua.DebugHook += OnDebugHook;
                 m_lua.HookException += OnHookException;
 
                 foreach (string name in m_functionName)
                     RegisterFunction(name);
 
+                // Register P8SCII button glyphs as Lua globals (matches femto8)
+                // so that e.g. btnp(⬅️) → btnp(\x8b) → btnp(0)
+                m_lua.DoString("_ENV[string.char(0x8b)]=0");  // ⬅️ left
+                m_lua.DoString("_ENV[string.char(0x91)]=1");  // ➡️ right
+                m_lua.DoString("_ENV[string.char(0x94)]=2");  // ⬆️ up
+                m_lua.DoString("_ENV[string.char(0x83)]=3");  // ⬇️ down
+                m_lua.DoString("_ENV[string.char(0x8e)]=4");  // 🅾️ o
+                m_lua.DoString("_ENV[string.char(0x97)]=5");  // ❎ x
+
                 System.Threading.ThreadPool.QueueUserWorkItem(delegate
                 {
-                    var res = m_lua.DoString(luaCleanString);
+                    // Load the P8SCII byte array directly via KeraLua's LoadBuffer
+                    // to bypass NLua's string encoding for the source code.
+                    var state = m_lua.State;
+                    var loadStatus = state.LoadBuffer(luaBytes, "cart");
+                    if (loadStatus == KeraLua.LuaStatus.OK)
+                    {
+                        int pcallResult = (int)state.PCall(0, -1, 0);
+                        if (pcallResult != 0)
+                        {
+                            string err = state.ToString(-1);
+                            Debug.WriteLine("Lua pcall error: " + err);
+                            state.Pop(1);
+                        }
+                    }
+                    else
+                    {
+                        string err = state.ToString(-1);
+                        Debug.WriteLine("Lua load error: " + err);
+                        state.Pop(1);
+                    }
+
                     var initFunction = m_lua["_init"] as LuaFunction;
 
                     if (initFunction != null)

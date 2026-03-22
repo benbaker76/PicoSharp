@@ -60,37 +60,201 @@ namespace PicoSharp
             luaString = CleanLuaCharacters(luaString);
         }
 
+        // Button/glyph symbols: replaced with numbers in code context only.
+        // Inside strings they are left as-is for later UTF-8→P8SCII byte conversion.
+        private static readonly (string search, string codeRepl)[] ButtonReplacements = new[]
+        {
+            ("\u2B05\uFE0F", "0"),        // ⬅️ left
+            ("\u27A1\uFE0F", "1"),        // ➡️ right
+            ("\u2B06\uFE0F", "2"),        // ⬆️ up
+            ("\u2B07\uFE0F", "3"),        // ⬇️ down
+            ("\uD83C\uDD7E\uFE0F", "4"), // 🅾️ o
+            ("\u274E", "5"),              // ❎ x
+            ("\u008b", "0"),              // P8SCII left
+            ("\u0091", "1"),              // P8SCII right
+            ("\u0094", "2"),              // P8SCII up
+            ("\u0083", "3"),              // P8SCII down
+            ("\u008e", "4"),              // P8SCII o
+            ("\u0097", "5"),              // P8SCII x
+        };
+
         private static string CleanLuaCharacters(string source)
         {
             if (String.IsNullOrEmpty(source))
                 return null;
 
-            // https://www.freeformatter.com/java-dotnet-escape.html
-            // https://github.com/juanitogan/p8-programming-fonts/wiki/P8SCII
+            // Replace button symbols with numbers only OUTSIDE string literals.
+            // Inside strings they must be preserved so the text renderer can display them.
+            var result = new StringBuilder(source.Length);
+            int pos = 0;
 
-            source = source.Replace("\u2B05\uFE0F", "0");       // left (⬅️)
-            source = source.Replace("\u27A1\uFE0F", "1");       // right (➡️)
-            source = source.Replace("\u2B06\uFE0F", "2");       // up (⬆️)
-            source = source.Replace("\u2B07\uFE0F", "3");       // down (⬇️)
-            source = source.Replace("\uD83C\uDD7E\uFE0F", "4"); // o (🅾️)
-            source = source.Replace("\u274E", "5");             // x (❎)
+            while (pos < source.Length)
+            {
+                char c = source[pos];
 
-            source = source.Replace("\u008b", "0");             // left (⬅️)
-            source = source.Replace("\u0091", "1");             // right (➡️)
-            source = source.Replace("\u0094", "2");             // up (⬆️)
-            source = source.Replace("\u0083", "3");             // down (⬇️)
-            source = source.Replace("\u008e", "4");             // o (🅾️)
-            source = source.Replace("\u0097", "5");             // x (❎)
+                // ---- String literal: copy verbatim (emojis preserved for later P8SCII conversion) ----
+                if (c == '"' || c == '\'')
+                {
+                    char quote = c;
+                    result.Append(c);
+                    pos++;
+                    while (pos < source.Length)
+                    {
+                        c = source[pos];
+                        result.Append(c);
+                        pos++;
+                        if (c == '\\' && pos < source.Length)
+                        {
+                            result.Append(source[pos]);
+                            pos++;
+                        }
+                        else if (c == quote)
+                            break;
+                    }
+                    continue;
+                }
 
+                // ---- Long string [[...]] or [=[...]=]: copy verbatim ----
+                if (c == '[')
+                {
+                    int eqCount = 0;
+                    int peek = pos + 1;
+                    while (peek < source.Length && source[peek] == '=') { eqCount++; peek++; }
+                    if (peek < source.Length && source[peek] == '[')
+                    {
+                        string closer = "]" + new string('=', eqCount) + "]";
+                        int bodyStart = peek + 1;
+                        result.Append(source, pos, bodyStart - pos);
+                        pos = bodyStart;
+                        int closeIdx = source.IndexOf(closer, pos, StringComparison.Ordinal);
+                        if (closeIdx == -1) closeIdx = source.Length - closer.Length;
+                        result.Append(source, pos, closeIdx - pos + closer.Length);
+                        pos = closeIdx + closer.Length;
+                        continue;
+                    }
+                }
+
+                // ---- Block comment --[[...]]: copy verbatim ----
+                if (c == '-' && pos + 1 < source.Length && source[pos + 1] == '-')
+                {
+                    int peek = pos + 2;
+                    if (peek < source.Length && source[peek] == '[')
+                    {
+                        int eqCount = 0;
+                        int p2 = peek + 1;
+                        while (p2 < source.Length && source[p2] == '=') { eqCount++; p2++; }
+                        if (p2 < source.Length && source[p2] == '[')
+                        {
+                            string closer = "]" + new string('=', eqCount) + "]";
+                            int bodyStart = p2 + 1;
+                            result.Append(source, pos, bodyStart - pos);
+                            pos = bodyStart;
+                            int closeIdx = source.IndexOf(closer, pos, StringComparison.Ordinal);
+                            if (closeIdx == -1) closeIdx = source.Length - closer.Length;
+                            result.Append(source, pos, closeIdx - pos + closer.Length);
+                            pos = closeIdx + closer.Length;
+                            continue;
+                        }
+                    }
+                    // Line comment -- copy to end of line
+                    int eol = source.IndexOf('\n', pos);
+                    if (eol == -1) eol = source.Length;
+                    result.Append(source, pos, eol - pos);
+                    pos = eol;
+                    continue;
+                }
+
+                // ---- Code context: apply button symbol replacements ----
+                bool replaced = false;
+                foreach (var (search, codeRepl) in ButtonReplacements)
+                {
+                    if (pos + search.Length <= source.Length &&
+                        string.Compare(source, pos, search, 0, search.Length, StringComparison.Ordinal) == 0)
+                    {
+                        result.Append(codeRepl);
+                        pos += search.Length;
+                        replaced = true;
+                        break;
+                    }
+                }
+
+                if (!replaced)
+                {
+                    result.Append(c);
+                    pos++;
+                }
+            }
+
+            source = result.ToString();
+
+            // Win1252 encoding fixups (apply globally - these are encoding corrections, not display symbols)
             byte[] win1252 = { 0xC7, 0xFC, 0xE9, 0xE2, 0xE4, 0xE0, 0xE5, 0xE7, 0xEA, 0xEB, 0xE8, 0xEF, 0xEE, 0xEC, 0xC4, 0xC5, 0xC9, 0xE6, 0xC6, 0xF4, 0xF6, 0xF2, 0xFB, 0xF9, 0xFF, 0xD6 };
 
             for (int i = 0; i < win1252.Length; i++)
                 source = source.Replace(Convert.ToString((char)(0x80 + i)), Convert.ToString((char)win1252[i]));
 
-            //source = source.Replace("\u0084", "");
-            //source = source.Replace("\u0001a", "");
-
             return source;
+        }
+
+        /// <summary>
+        /// Converts multi-byte UTF-8 emoji/symbol sequences to single P8SCII bytes,
+        /// matching femto8's convert_utf8_to_p8scii. The result is a byte array
+        /// where all P8SCII characters are single bytes (0x00-0xFF).
+        /// </summary>
+        public static byte[] ConvertUtf8ToP8SCII(string source, P8Symbol[] symbols)
+        {
+            byte[] utf8 = Encoding.UTF8.GetBytes(source);
+            byte[] output = new byte[utf8.Length];
+            int readPos = 0, writePos = 0;
+
+            while (readPos < utf8.Length)
+            {
+                if (utf8[readPos] >= 0x80)
+                {
+                    // Try to match a multi-byte UTF-8 symbol
+                    bool matched = false;
+                    int remaining = utf8.Length - readPos;
+
+                    for (int i = 0; i < symbols.Length; i++)
+                    {
+                        var sym = symbols[i];
+                        if (sym.length > remaining)
+                            continue;
+
+                        bool match = true;
+                        for (int k = 0; k < sym.length; k++)
+                        {
+                            if (utf8[readPos + k] != sym.encoding[k]) { match = false; break; }
+                        }
+
+                        if (match)
+                        {
+                            output[writePos++] = sym.index;
+                            readPos += sym.length;
+                            matched = true;
+                            break;
+                        }
+                    }
+
+                    if (!matched)
+                        output[writePos++] = utf8[readPos++];
+                }
+                else
+                {
+                    output[writePos++] = utf8[readPos++];
+                }
+            }
+
+            byte[] result = new byte[writePos];
+            Buffer.BlockCopy(output, 0, result, 0, writePos);
+            return result;
+        }
+
+        public struct P8Symbol
+        {
+            public byte[] encoding;
+            public byte length;
+            public byte index;
         }
 
         public static byte[] HexStringToByteArray(string value)
