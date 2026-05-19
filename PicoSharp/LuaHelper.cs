@@ -29,6 +29,21 @@ namespace PicoSharp
             return 0;
         }
 
+        public bool is_bbox_offscreen(int wx0, int wy0, int wx1, int wy1)
+        {
+            int cx, cy;
+            camera_get(out cx, out cy);
+            int ccx0, ccy0, ccx1, ccy1;
+            clip_get(out ccx0, out ccy0, out ccx1, out ccy1);
+            if (ccx0 < 0) ccx0 = 0;
+            if (ccy0 < 0) ccy0 = 0;
+            if (ccx1 > P8_WIDTH) ccx1 = P8_WIDTH;
+            if (ccy1 > P8_HEIGHT) ccy1 = P8_HEIGHT;
+            int sx0 = wx0 - cx, sy0 = wy0 - cy;
+            int sx1 = wx1 - cx, sy1 = wy1 - cy;
+            return sx1 < ccx0 || sx0 >= ccx1 || sy1 < ccy0 || sy0 >= ccy1;
+        }
+
         public void draw_oval_segment(int xc, int yc, int x, int y, int r, int xr, int yr, int col, int fillp, int mask)
         {
             if ((mask & 1) != 0)
@@ -54,6 +69,7 @@ namespace PicoSharp
             int r = Math.Max(xr, yr);
             if (r <= 0)
                 return;
+            if (is_bbox_offscreen(xc - xr, yc - yr, xc + xr, yc + yr)) return;
             int x = 0, y = Math.Abs(r);
             int d = 3 - 2 * Math.Abs(r);
 
@@ -87,6 +103,7 @@ namespace PicoSharp
 
         public void draw_line(int x0, int y0, int x1, int y1, int col, int fillp)
         {
+            if (is_bbox_offscreen(Math.Min(x0, x1), Math.Min(y0, y1), Math.Max(x0, x1), Math.Max(y0, y1))) return;
             int dx = Math.Abs(x1 - x0);
             int sx = x0 < x1 ? 1 : -1;
             int dy = -Math.Abs(y1 - y0);
@@ -154,6 +171,7 @@ namespace PicoSharp
             int r = Math.Max(xr, yr);
             if (r <= 0)
                 return;
+            if (is_bbox_offscreen(xc - xr, yc - yr, xc + xr, yc + yr)) return;
             int x = 0, y = Math.Abs(r);
             int d = 3 - 2 * Math.Abs(r);
 
@@ -187,6 +205,7 @@ namespace PicoSharp
 
         public void draw_rect(int x0, int y0, int x1, int y1, int col, int fillp)
         {
+            if (is_bbox_offscreen(x0, y0, x1, y1)) return;
             draw_hline(x0, y0, x1, col, fillp);
             draw_hline(x0, y1, x1, col, fillp);
             draw_vline(x0, y0, y1, col, fillp);
@@ -295,7 +314,7 @@ namespace PicoSharp
                     byte index = gfx_get(src_x, src_y, MEMORY_SPRITES, MEMORY_SPRITES_SIZE);
                     byte color = color_get(PaletteType.Draw, (int)index);
 
-                    if ((color & 0x10) == 0)
+                    if ((color & 0xf0) == 0)
                         pixel_set(dx + x, dy + y, index, 0, DrawType.Sprite);
                 }
             }
@@ -315,7 +334,7 @@ namespace PicoSharp
                     byte index = gfx_get(sx + x, sy + y, MEMORY_SPRITES, MEMORY_SPRITES_SIZE);
                     byte color = color_get(PaletteType.Draw, index);
 
-                    if ((color & 0x10) == 0)
+                    if ((color & 0xf0) == 0)
                         pixel_set(left + fx, top + fy, index, 0, DrawType.Sprite);
                 }
             }
@@ -463,7 +482,21 @@ namespace PicoSharp
             int offset = gfx_addr_remap(location) + (x >> 1) + y * 64;
 
             byte color = (col == -1 ? pencolor_get() : color_get(PaletteType.Draw, col));
-            array[offset] = (byte)(Tools.IsEven(x) ? (array[offset] & 0xF0) | (color & 0xF) : (color << 4) | (array[offset] & 0xF));
+
+            byte rw_mask = m_memory[MEMORY_RW_MASK];
+            if (location == MEMORY_SCREEN && rw_mask != 0xff)
+            {
+                byte write_mask = (byte)(rw_mask & 0xf);
+                byte read_mask = (byte)((rw_mask >> 4) & 0xf);
+                byte dst = (byte)(Tools.IsEven(x) ? (array[offset] & 0xf) : (array[offset] >> 4));
+                byte src = (byte)(color & 0xf);
+                byte result = (byte)((dst & ~write_mask) | (src & write_mask & read_mask));
+                array[offset] = (byte)(Tools.IsEven(x) ? (array[offset] & 0xF0) | result : (result << 4) | (array[offset] & 0xF));
+            }
+            else
+            {
+                array[offset] = (byte)(Tools.IsEven(x) ? (array[offset] & 0xF0) | (color & 0xF) : (color << 4) | (array[offset] & 0xF));
+            }
         }
 
         public void gfx_set(int x, int y, int location, int size, int col)
@@ -515,10 +548,14 @@ namespace PicoSharp
 
         public void clip_set(int x, int y, int w, int h)
         {
+            int x1 = x + w;
+            int y1 = y + h;
+            if (x1 < 0) x1 = 0;
+            if (y1 < 0) y1 = 0;
             m_memory[MEMORY_CLIPRECT] = (byte)x;
             m_memory[MEMORY_CLIPRECT + 1] = (byte)y;
-            m_memory[MEMORY_CLIPRECT + 2] = (byte)(x + w);
-            m_memory[MEMORY_CLIPRECT + 3] = (byte)(y + h);
+            m_memory[MEMORY_CLIPRECT + 2] = (byte)x1;
+            m_memory[MEMORY_CLIPRECT + 3] = (byte)y1;
         }
 
         public void clip_get(out int x0, out int y0, out int x1, out int y1)
@@ -632,7 +669,7 @@ namespace PicoSharp
             for (int i = 0; i < 16; i++)
             {
                 color_set(PaletteType.Draw, i, i == 0 ? i | 0x10 : i);
-                color_set(PaletteType.Screen, i, i == 0 ? i | 0x10 : i);
+                color_set(PaletteType.Screen, i, i);
             }
 
             color_set(PaletteType.Secondary, 0, 0x00);

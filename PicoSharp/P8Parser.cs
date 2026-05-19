@@ -57,7 +57,76 @@ namespace PicoSharp
             else
                 ParseP8(fileName, memory, out luaString);
 
+            if (!string.IsNullOrEmpty(luaString))
+            {
+                string cartDir = Path.GetDirectoryName(fileName) ?? ".";
+                string expanded = ProcessIncludes(luaString, cartDir);
+                if (expanded != null)
+                    luaString = expanded;
+            }
+
             luaString = CleanLuaCharacters(luaString);
+        }
+
+        // Expand `#include filename` directives in the Lua source.
+        // Resolves filenames relative to the directory containing the cart.
+        // Returns null when no includes were found.
+        private static string ProcessIncludes(string luaScript, string cartDir)
+        {
+            if (luaScript.IndexOf("#include", StringComparison.Ordinal) < 0)
+                return null;
+
+            var result = new StringBuilder(luaScript.Length * 2);
+            int p = 0;
+            int len = luaScript.Length;
+            bool found = false;
+
+            while (p < len)
+            {
+                int eol = luaScript.IndexOf('\n', p);
+                int lineLen = eol >= 0 ? eol - p : len - p;
+                int trimStart = p;
+                while (trimStart < p + lineLen && (luaScript[trimStart] == ' ' || luaScript[trimStart] == '\t'))
+                    trimStart++;
+
+                if (trimStart + 9 <= p + lineLen &&
+                    string.Compare(luaScript, trimStart, "#include ", 0, 9, StringComparison.Ordinal) == 0)
+                {
+                    found = true;
+                    int nameStart = trimStart + 9;
+                    int nameEnd = p + lineLen;
+                    while (nameEnd > nameStart && (luaScript[nameEnd - 1] == ' ' ||
+                                                     luaScript[nameEnd - 1] == '\t' ||
+                                                     luaScript[nameEnd - 1] == '\r'))
+                        nameEnd--;
+
+                    if (nameEnd > nameStart)
+                    {
+                        string fname = luaScript.Substring(nameStart, nameEnd - nameStart);
+                        string includePath = Path.Combine(cartDir, fname);
+                        try
+                        {
+                            string included = File.ReadAllText(includePath, Encoding.GetEncoding(28591));
+                            result.Append(included);
+                            if (included.Length == 0 || included[included.Length - 1] != '\n')
+                                result.Append('\n');
+                        }
+                        catch (Exception ex)
+                        {
+                            Debug.WriteLine("Warning: #include file not found: " + includePath + " (" + ex.Message + ")");
+                        }
+                    }
+                }
+                else
+                {
+                    result.Append(luaScript, p, lineLen);
+                    if (eol >= 0) result.Append('\n');
+                }
+
+                p = (eol >= 0) ? eol + 1 : len;
+            }
+
+            return found ? result.ToString() : null;
         }
 
         // Button/glyph symbols: replaced with numbers in code context only.
@@ -437,19 +506,12 @@ namespace PicoSharp
                     byte effectID3 = musicData[readOffset++];
                     byte effectID4 = musicData[readOffset++];
 
-                    bool beginPatternLoop = ((flagsByte & (1 << 0)) != 0);
-                    bool endPatternLoop = ((flagsByte & (1 << 1)) != 0);
-                    bool stopAtEndOfPattern = ((flagsByte & (1 << 2)) != 0);
-
-                    bool channel1Silence = (effectID1 == 0x41) || (effectID2 == 0x41) || (effectID3 == 0x41) || (effectID4 == 0x41);
-                    bool channel2Silence = (effectID1 == 0x42) || (effectID2 == 0x42) || (effectID3 == 0x42) || (effectID4 == 0x42);
-                    bool channel3Silence = (effectID1 == 0x43) || (effectID2 == 0x43) || (effectID3 == 0x43) || (effectID4 == 0x43);
-                    bool channel4Silence = (effectID1 == 0x44) || (effectID2 == 0x44) || (effectID3 == 0x44) || (effectID4 == 0x44);
-
-                    memory[Emulator.MEMORY_MUSIC + writeOffset++] = (byte)((channel1Silence ? 1 << 6 : effectID1 & 0x7F) | (beginPatternLoop ? 1 << 7 : 0));
-                    memory[Emulator.MEMORY_MUSIC + writeOffset++] = (byte)((channel2Silence ? 1 << 6 : effectID2 & 0x7F) | (endPatternLoop ? 1 << 7 : 0));
-                    memory[Emulator.MEMORY_MUSIC + writeOffset++] = (byte)((channel3Silence ? 1 << 6 : effectID3 & 0x7F) | (stopAtEndOfPattern ? 1 << 7 : 0));
-                    memory[Emulator.MEMORY_MUSIC + writeOffset++] = (byte)(channel4Silence ? 1 << 6 : effectID4 & 0x7F);
+                    // On-disk flags bits 0-3 map to bit 7 of in-memory bytes 0-3.
+                    // Preserve the full 7-bit effect ID (including the channel-silence bit at 0x40).
+                    memory[Emulator.MEMORY_MUSIC + writeOffset++] = (byte)((effectID1 & 0x7F) | ((flagsByte & (1 << 0)) != 0 ? 0x80 : 0));
+                    memory[Emulator.MEMORY_MUSIC + writeOffset++] = (byte)((effectID2 & 0x7F) | ((flagsByte & (1 << 1)) != 0 ? 0x80 : 0));
+                    memory[Emulator.MEMORY_MUSIC + writeOffset++] = (byte)((effectID3 & 0x7F) | ((flagsByte & (1 << 2)) != 0 ? 0x80 : 0));
+                    memory[Emulator.MEMORY_MUSIC + writeOffset++] = (byte)((effectID4 & 0x7F) | ((flagsByte & (1 << 3)) != 0 ? 0x80 : 0));
                 }
             }
 

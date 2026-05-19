@@ -21,9 +21,16 @@ function all(t)
   end
 end
 
-function add(t, v)
+function add(t, v, i)
   if type(t) == 'table' then
-    t[#t+1] = v
+    if i == nil then
+      t[#t+1] = v
+    else
+      for j = #t, i, -1 do
+        t[j+1] = t[j]
+      end
+      t[i] = v
+    end
     return v
   end
 end
@@ -105,4 +112,8 @@ end
 
 function costatus(f)
   return coroutine.status(f)
+end
+
+function pack(...)
+  return {n=select('#',...), ...}
 end

@@ -346,7 +346,7 @@ namespace PicoSharp
             return m_emulator.sget(x, y);
         }
 
-        // spr(n, x, y, [w], [h], [flip_x], [flip_y])
+        // spr(n, [x], [y], [w], [h], [flip_x], [flip_y])
         public int spr(object _n = null, object _x = null, object _y = null, object _w = null, object _h = null, object _flip_x = null, object _flip_y = null)
         {
             if (_n == null)
@@ -355,12 +355,25 @@ namespace PicoSharp
             int n = (int)Math.Floor(Convert.ToDouble(_n)) & 0xFF;
             int x = _x == null ? 0 : (int)Math.Floor(Convert.ToDouble(_x));
             int y = _y == null ? 0 : (int)Math.Floor(Convert.ToDouble(_y));
-            int w = _w == null ? 1 : Convert.ToInt32(_w);
-            int h = _h == null ? 1 : Convert.ToInt32(_h);
+            double w_raw = _w == null ? 1.0 : Convert.ToDouble(_w);
+            double h_raw = _h == null ? 1.0 : Convert.ToDouble(_h);
             bool flip_x = _flip_x != null && Convert.ToBoolean(_flip_x);
             bool flip_y = _flip_y != null && Convert.ToBoolean(_flip_y);
 
-            m_emulator.draw_sprites(n, x, y, w, h, flip_x, flip_y);
+            // Use the integer fast path when w/h are exact integers.
+            if (w_raw == Math.Floor(w_raw) && h_raw == Math.Floor(h_raw))
+            {
+                m_emulator.draw_sprites(n, x, y, (int)w_raw, (int)h_raw, flip_x, flip_y);
+            }
+            else
+            {
+                // Fractional path — render as a scaled sprite covering the requested area.
+                int sx = (n & 0xF) * Emulator.SPRITE_WIDTH;
+                int sy = (n >> 4) * Emulator.SPRITE_HEIGHT;
+                int sw = (int)Math.Ceiling(w_raw * Emulator.SPRITE_WIDTH);
+                int sh = (int)Math.Ceiling(h_raw * Emulator.SPRITE_HEIGHT);
+                m_emulator.draw_scaled_sprite(sx, sy, sw, sh, x, y, 1.0f, 1.0f, flip_x, flip_y);
+            }
 
             return 0;
         }
@@ -416,10 +429,10 @@ namespace PicoSharp
         // *** Tables ***
         // ****************************************************************
 
-        // add(tbl, v)
-        public object add(LuaTable tbl = null, object v = null)
+        // add(tbl, v, [i])
+        public object add(LuaTable tbl = null, object v = null, object _i = null)
         {
-            return m_emulator.add(tbl, v);
+            return m_emulator.add(tbl, v, _i);
         }
         // all(tbl)
         public object all(LuaTable tbl = null)
@@ -462,6 +475,12 @@ namespace PicoSharp
         public object btnp(object _i = null, object _p = null)
         {
             return m_emulator.btnp(_i, _p);
+        }
+
+        // _update_buttons()
+        public void _update_buttons()
+        {
+            m_emulator.UpdateInput();
         }
 
         // ****************************************************************
@@ -531,6 +550,16 @@ namespace PicoSharp
         // ****************************************************************
 
         // cstore(destaddr, sourceaddr, len, [filename])
+        public int cstore(object _destaddr = null, object _sourceaddr = null, object _len = null, object _filename = null)
+        {
+            int destaddr = (_destaddr == null ? 0 : Convert.ToInt32(_destaddr));
+            int sourceaddr = (_sourceaddr == null ? 0 : Convert.ToInt32(_sourceaddr));
+            int len = (_len == null ? 0 : Convert.ToInt32(_len));
+            string filename = (_filename == null ? null : _filename.ToString());
+
+            return m_emulator.cstore(destaddr, sourceaddr, len, filename);
+        }
+
         // memcpy(destaddr, sourceaddr, len)
         public void memcpy(object _destaddr = null, object _sourceaddr = null, object _len = null)
         {
@@ -603,13 +632,13 @@ namespace PicoSharp
         }
 
         // reload(destaddr, sourceaddr, len, [filename])
-        public void reload(object _destaddr = null, object _sourceaddr = null, object _len = null)
+        public int reload(object _destaddr = null, object _sourceaddr = null, object _len = null)
         {
             int destaddr = (_destaddr == null ? 0 : Convert.ToInt32(_destaddr));
             int sourceaddr = (_sourceaddr == null ? 0 : Convert.ToInt32(_sourceaddr));
             int len = (_len == null ? 0 : Convert.ToInt32(_len));
 
-            m_emulator.reload(destaddr, sourceaddr, len);
+            return m_emulator.reload(destaddr, sourceaddr, len);
         }
 
         // ****************************************************************
@@ -800,8 +829,11 @@ namespace PicoSharp
         // srand(val)
         public void srand(object _val = null)
         {
-            int val = (_val == null ? 0 : Convert.ToInt32(_val));
-            m_emulator.srand(val);
+            // Preserve the full 16.16 fixed-point representation of the seed
+            // so that srand(0x5b04.17cb) produces 0x5b0417cb (matches femto8).
+            double val = (_val == null ? 0.0 : Convert.ToDouble(_val));
+            int fixed_seed = (int)(val * 65536.0);
+            m_emulator.srand(fixed_seed);
         }
 
         // ****************************************************************
@@ -907,19 +939,31 @@ namespace PicoSharp
             m_emulator.extcmd(cmd);
         }
 
+        // _set_fps(fps)
+        public void _set_fps(object _fps = null)
+        {
+            int fps = (_fps == null ? 30 : Convert.ToInt32(_fps));
+            m_emulator.setfps(fps);
+        }
+
+        // holdframe() — no-op
+        public void holdframe()
+        {
+        }
+
         // ****************************************************************
         // *** Debugging ***
         // ****************************************************************
 
         // assert(cond, [message])
         // printh(str, [filename], [overwrite])
-        public void printh(object _str = null, object _label = null, object _overwrite = null)
+        public bool printh(object _str = null, object _label = null, object _overwrite = null)
         {
             string str = (_str == null ? null : _str.ToString());
             string label = (_label == null ? null : _label.ToString());
             bool overwrite = (_overwrite == null ? false : Convert.ToBoolean(_overwrite));
 
-            m_emulator.printh(str, label, overwrite);
+            return m_emulator.printh(str, label, overwrite);
         }
 
         // stat(n)
@@ -930,8 +974,17 @@ namespace PicoSharp
             return m_emulator.stat(n);
         }
 
-        // stop() (undocumented)
-        // trace() (undocumented)
+        // stop([message,] [x,] [y,] [col])
+        public void stop(object _msg = null, object _x = null, object _y = null, object _col = null)
+        {
+            m_emulator.stop(_msg, _x, _y, _col);
+        }
+
+        // trace([coroutine,] [message,] [skip])
+        public string trace(object _co = null, object _msg = null, object _skip = null)
+        {
+            return m_emulator.trace(_co, _msg, _skip);
+        }
 
 
         // ****************************************************************

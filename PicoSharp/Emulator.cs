@@ -54,7 +54,10 @@ namespace PicoSharp
         public const int MEMORY_PENCOLOR = 0x5f25;
         public const int MEMORY_CURSOR = 0x5f26;
         public const int MEMORY_CAMERA = 0x5f28;
+        public const int MEMORY_SCREEN_TRANSFORM = 0x5f2c;
         public const int MEMORY_DEVKIT_MODE = 0x5f2d;
+        public const int MEMORY_AUDIO_PAUSE = 0x5f2f;
+        public const int MEMORY_SUPPRESS_PAUSE = 0x5f30;
         public const int MEMORY_FILLP = 0x5f31;
         public const int MEMORY_FILLP_ATTR = 0x5f33;
         public const int MEMORY_COLOR_FILLP = 0x5f34;
@@ -78,6 +81,8 @@ namespace PicoSharp
         public const int MEMORY_PGET_DEFAULT = 0x5f5b;
         public const int MEMORY_AUTO_REPEAT_DELAY = 0x5f5c;
         public const int MEMORY_AUTO_REPEAT_INTERVAL = 0x5f5d;
+        public const int MEMORY_RW_MASK = 0x5f5e;
+        public const int MEMORY_HIGH_COLOUR_MODE = 0x5f5f;
         public const int MEMORY_PALETTE_SECONDARY = 0x5f60;
 
         public const int SCREEN_SIZE = 128 * 128 * 4;
@@ -85,7 +90,7 @@ namespace PicoSharp
         public const int GLYPH_HEIGHT = 6;
         public const int SPRITE_WIDTH = 8;
         public const int SPRITE_HEIGHT = 8;
-        public const int BUTTON_COUNT = 6;
+        public const int BUTTON_COUNT = 7;
         public const int BUTTON_INTERNAL_COUNT = 13;
         public const int PLAYER_COUNT = 2;
 
@@ -400,6 +405,7 @@ namespace PicoSharp
             // ****************************************************************
             "btn",
             "btnp",
+            "_update_buttons",
             // ****************************************************************
             // *** Sound ***
             // ****************************************************************
@@ -414,7 +420,7 @@ namespace PicoSharp
             // ****************************************************************
             // *** Memory ***
             // ****************************************************************
-            // "cstore",
+            "cstore",
             "memcpy",
             "memset",
             "peek",
@@ -481,14 +487,16 @@ namespace PicoSharp
             // ****************************************************************
             "menuitem",
             "extcmd",
+            "_set_fps",
+            "holdframe",
             // ****************************************************************
             // *** Debugging ***
             // ****************************************************************
             // "assert",
             "printh",
             "stat",
-            // "stop",
-            // "trace,
+            "stop",
+            "trace",
             // ****************************************************************
             // *** Misc ***
             // ****************************************************************
@@ -574,6 +582,7 @@ namespace PicoSharp
             m_memory[MEMORY_SPRITE_PHYS] = 0x00;
             m_memory[MEMORY_SCREEN_PHYS] = 0x60;
             m_memory[MEMORY_MAP_START] = 0x20;
+            m_memory[MEMORY_RW_MASK] = 0xff;
 
             reset_color();
             clear_screen(0);
@@ -597,6 +606,9 @@ namespace PicoSharp
                 m_lua.State.Encoding = Encoding.GetEncoding(28591); // ISO-8859-1
                 m_lua.DebugHook += OnDebugHook;
                 m_lua.HookException += OnHookException;
+
+                // Match femto8: drop the debug library from the global env.
+                m_lua.DoString("debug = nil");
 
                 foreach (string name in m_functionName)
                     RegisterFunction(name);
@@ -697,6 +709,10 @@ namespace PicoSharp
             if (m_luaThreadActive)
                 return;
 
+            // stop() called: halt _update/_draw invocation.
+            if (m_stopped)
+                return;
+
             if (m_lua != null)
             {
                 var updateFunction60 = m_lua["_update60"] as LuaFunction;
@@ -730,8 +746,11 @@ namespace PicoSharp
         // circ(x, y, [r,] [col])
         public int circ(int x, int y, int r = 4, int color = -1)
         {
-            int col = color == -1 ? (pencolor_get() & 0xF) : color;
-            int fillp = col == -1 ? 0 : col & 0xFFFF;
+            int col = color == -1 ? pencolor_get() : color;
+            int fillp = color != -1 ? color & 0xFFFF : 0;
+
+            if (color != -1)
+                pencolor_set((byte)col);
 
             draw_circ(x, y, r, col, fillp);
 
@@ -741,8 +760,11 @@ namespace PicoSharp
         // circfill(x, y, [r,] [col])
         public int circfill(int x, int y, int r = 4, int col = -1)
         {
-            int color = col == -1 ? (pencolor_get() & 0xF) : col;
-            int fillp = col == -1 ? 0 : col & 0xFFFF;
+            int color = col == -1 ? pencolor_get() : col;
+            int fillp = col != -1 ? col & 0xFFFF : 0;
+
+            if (col != -1)
+                pencolor_set((byte)color);
 
             draw_circfill(x, y, r, color, fillp);
 
@@ -865,8 +887,11 @@ namespace PicoSharp
             int y0 = m_memory[MEMORY_LINE_Y] | (m_memory[MEMORY_LINE_Y + 1] << 8);
 
             bool valid = m_memory[MEMORY_LINE_VALID] == 0;
-            int color = (col == -1) ? (pencolor_get() & 0xF) : col;
+            int color = (col == -1) ? pencolor_get() : col;
             const int fillp = 0;
+
+            if (col != -1)
+                pencolor_set((byte)color);
 
             if (valid)
                 draw_line(x0, y0, x1, y1, color, fillp);
@@ -881,8 +906,11 @@ namespace PicoSharp
         public void line(int x0, int y0, int x1, int y1, int col = -1)
         {
             bool valid = true;
-            int color = (col == -1) ? (pencolor_get() & 0xF) : col;
+            int color = (col == -1) ? pencolor_get() : col;
             const int fillp = 0;
+
+            if (col != -1)
+                pencolor_set((byte)color);
 
             if (valid)
                 draw_line(x0, y0, x1, y1, color, fillp);
@@ -898,10 +926,13 @@ namespace PicoSharp
         // oval(x0, y0, x1, y1, [col])
         public int oval(int x0, int y0, int x1, int y1, int col = -1)
         {
-            int color = col != -1 ? col : pencolor_get() & 0xF;
+            int color = col != -1 ? col : pencolor_get();
             int fillp = col != -1 ? col & 0xffff : 0;
 
-            draw_oval(x0, y0, x1, y1, col, fillp);
+            if (col != -1)
+                pencolor_set((byte)color);
+
+            draw_oval(x0, y0, x1, y1, color, fillp);
 
             return 0;
         }
@@ -909,20 +940,60 @@ namespace PicoSharp
         // ovalfill(x0, y0, x1, y1, [col])
         public int ovalfill(int x0, int y0, int x1, int y1, int col = -1)
         {
-            int color = col != -1 ? col : pencolor_get() & 0xF;
+            int color = col != -1 ? col : pencolor_get();
             int fillp = col != -1 ? col & 0xffff : 0;
 
-            draw_ovalfill(x0, y0, x1, y1, col, fillp);
+            if (col != -1)
+                pencolor_set((byte)color);
+
+            draw_ovalfill(x0, y0, x1, y1, color, fillp);
 
             return 0;
         }
 
-        // pal(c0, c1, [p])
+        // pal(c0, c1, [p])  or  pal(tbl, [p])  or  pal(p)  or  pal()
         public void pal(int c0 = -1, int c1 = -1, int p = -1)
         {
+            // pal() — reset all palettes (DRAW/SCREEN/SECONDARY)
             if (c0 == -1 && c1 == -1 && p == -1)
             {
                 reset_color();
+                return;
+            }
+
+            // pal(p) — reset just palette p
+            if (c1 == -1 && p == -1)
+            {
+                int pal_type = c0;
+                if (pal_type == (int)PaletteType.Draw)
+                {
+                    for (int i = 0; i < 16; i++)
+                        color_set(PaletteType.Draw, i, i == 0 ? i | 0x10 : i);
+                }
+                else if (pal_type == (int)PaletteType.Screen)
+                {
+                    for (int i = 0; i < 16; i++)
+                        color_set(PaletteType.Screen, i, i);
+                }
+                else if (pal_type == (int)PaletteType.Secondary)
+                {
+                    color_set(PaletteType.Secondary, 0, 0x00);
+                    color_set(PaletteType.Secondary, 1, 0x01);
+                    color_set(PaletteType.Secondary, 2, 0x12);
+                    color_set(PaletteType.Secondary, 3, 0x13);
+                    color_set(PaletteType.Secondary, 4, 0x24);
+                    color_set(PaletteType.Secondary, 5, 0x15);
+                    color_set(PaletteType.Secondary, 6, 0xd6);
+                    color_set(PaletteType.Secondary, 7, 0x67);
+                    color_set(PaletteType.Secondary, 8, 0x48);
+                    color_set(PaletteType.Secondary, 9, 0x49);
+                    color_set(PaletteType.Secondary, 10, 0x9a);
+                    color_set(PaletteType.Secondary, 11, 0x3b);
+                    color_set(PaletteType.Secondary, 12, 0xdc);
+                    color_set(PaletteType.Secondary, 13, 0x5d);
+                    color_set(PaletteType.Secondary, 14, 0x8e);
+                    color_set(PaletteType.Secondary, 15, 0xef);
+                }
                 return;
             }
 
@@ -931,8 +1002,16 @@ namespace PicoSharp
                 if (p == -1)
                     p = 0;
 
-                byte old_val = color_get((PaletteType)p, c0);
-                byte new_val = (byte)((c1 & 0x8f) | (old_val & 0x10));
+                byte new_val;
+                if ((PaletteType)p == PaletteType.Draw)
+                {
+                    byte old_val = color_get((PaletteType)p, c0);
+                    new_val = (byte)((c1 & 0xf) | (old_val & 0xf0));
+                }
+                else
+                {
+                    new_val = (byte)(c1 & 0xff);
+                }
                 color_set((PaletteType)p, c0, new_val);
                 return;
             }
@@ -941,9 +1020,14 @@ namespace PicoSharp
         // palt([col,] [t])
         public void palt(int col, bool? t = null)
         {
+            // palt() — index 0 transparent, all others opaque (preserves color remappings)
             if (col == -1 && t == null)
             {
-                reset_color();
+                for (int i = 0; i < 16; i++)
+                {
+                    byte c = color_get(PaletteType.Draw, i);
+                    color_set(PaletteType.Draw, i, i == 0 ? (byte)(c | 0x10) : (byte)(c & 0xf));
+                }
                 return;
             }
 
@@ -961,7 +1045,7 @@ namespace PicoSharp
 
             if (col < 0 || col > 15)
                 return;
-            
+
             byte cur = color_get(PaletteType.Draw, col);
 
             color_set(PaletteType.Draw, col, t.Value ? (byte)(cur | 0x10) : (byte)(cur & 0x0F));
@@ -987,30 +1071,37 @@ namespace PicoSharp
         {
             int cameraX, cameraY;
             camera_get(out cameraX, out cameraY);
-            x -= cameraX;
-            y -= cameraY;
+            int sx = x - cameraX;
+            int sy = y - cameraY;
             int x0 = m_memory[MEMORY_CLIPRECT];
             int y0 = m_memory[MEMORY_CLIPRECT + 1];
             int x1 = m_memory[MEMORY_CLIPRECT + 2];
             int y1 = m_memory[MEMORY_CLIPRECT + 3];
 
-            if (x >= x0 && x < x1 && y >= y0 && y < y1)
+            int color = c != -1 ? c : pencolor_get();
+            if (c != -1)
+                pencolor_set((byte)color);
+
+            if (sx >= x0 && sx < x1 && sy >= y0 && sy < y1)
             {
-                c = color_get(PaletteType.Draw, c);
-                gfx_set(x, y, MEMORY_SCREEN, MEMORY_SCREEN_SIZE, c);
+                byte mapped = color_get(PaletteType.Draw, color);
+                gfx_set(sx, sy, MEMORY_SCREEN, MEMORY_SCREEN_SIZE, mapped);
             }
         }
 
         // rect(x0, y0, x1, y1, [col])
         public void rect(int x0, int y0, int x1, int y1, int col = -1)
         {
-            int color = col != -1 ? col : pencolor_get() & 0xF;
+            int color = col != -1 ? col : pencolor_get();
             int fillp = col != -1 ? col & 0xffff : 0;
 
             int left = Math.Min(x0, x1);
             int top = Math.Min(y0, y1);
             int right = Math.Max(x0, x1);
             int bottom = Math.Max(y0, y1);
+
+            if (col != -1)
+                pencolor_set((byte)color);
 
             draw_rect(left, top, right, bottom, color, fillp);
         }
@@ -1018,7 +1109,7 @@ namespace PicoSharp
         // rectfill(x0, y0, x1, y1, [col])
         public void rectfill(int x0, int y0, int x1, int y1, int col = -1)
         {
-            int color = col != -1 ? col : pencolor_get() & 0xF;
+            int color = col != -1 ? col : pencolor_get();
             int fillp = col != -1 ? col & 0xffff : 0;
 
             int left = Math.Min(x0, x1);
@@ -1026,13 +1117,16 @@ namespace PicoSharp
             int right = Math.Max(x0, x1);
             int bottom = Math.Max(y0, y1);
 
+            if (col != -1)
+                pencolor_set((byte)color);
+
             draw_rectfill(left, top, right, bottom, color, fillp);
         }
 
         // rrect(x, y, w, h, r, [col])
         public int rrect(int x, int y, int w, int h, int r, int col = -1)
         {
-            int color = col != -1 ? col : pencolor_get() & 0xF;
+            int color = col != -1 ? col : pencolor_get();
             int fillp = col != -1 ? col & 0xffff : 0;
 
             int left = x;
@@ -1042,14 +1136,17 @@ namespace PicoSharp
             int bottom = top + h - 1;
             r = Math.Max(0, Math.Min(r, Math.Min(w, h) / 2));
 
-            draw_hline(left + r, top, right - r, col, fillp);
-            draw_hline(left + r, bottom, right - r, col, fillp);
-            draw_vline(left, top + r, bottom - r, col, fillp);
-            draw_vline(right, top + r, bottom - r, col, fillp);
-            draw_circ_mask(left + r, top + r, r, col, fillp, 1 << 3 | 1 << 7);
-            draw_circ_mask(right - r, top + r, r, col, fillp, 1 << 2 | 1 << 6);
-            draw_circ_mask(left + r, bottom - r, r, col, fillp, 1 << 1 | 1 << 5);
-            draw_circ_mask(right - r, bottom - r, r, col, fillp, 1 << 0 | 1 << 4);
+            if (col != -1)
+                pencolor_set((byte)color);
+
+            draw_hline(left + r, top, right - r, color, fillp);
+            draw_hline(left + r, bottom, right - r, color, fillp);
+            draw_vline(left, top + r, bottom - r, color, fillp);
+            draw_vline(right, top + r, bottom - r, color, fillp);
+            draw_circ_mask(left + r, top + r, r, color, fillp, 1 << 3 | 1 << 7);
+            draw_circ_mask(right - r, top + r, r, color, fillp, 1 << 2 | 1 << 6);
+            draw_circ_mask(left + r, bottom - r, r, color, fillp, 1 << 1 | 1 << 5);
+            draw_circ_mask(right - r, bottom - r, r, color, fillp, 1 << 0 | 1 << 4);
 
             return 0;
         }
@@ -1057,7 +1154,7 @@ namespace PicoSharp
         // rrectfill(x, y, w, h, r, [col])
         public int rrectfill(int x, int y, int w, int h, int r, int col = -1)
         {
-            int color = col != -1 ? col : pencolor_get() & 0xF;
+            int color = col != -1 ? col : pencolor_get();
             int fillp = col != -1 ? col & 0xffff : 0;
 
             int left = x;
@@ -1067,13 +1164,16 @@ namespace PicoSharp
             int bottom = top + h;
             r = Math.Max(0, Math.Min(r, Math.Min(w, h) / 2));
 
-            draw_rectfill(left, top + r, right, bottom - r, col, fillp);
-            draw_rectfill(left + r, top, right - r, top + r, col, fillp);
-            draw_rectfill(left + r, bottom - r, right - r, bottom, col, fillp);
-            draw_circfill_mask(left + r, top + r, r, col, fillp, 1 << 3 | 1 << 7);
-            draw_circfill_mask(right - r, top + r, r, col, fillp, 1 << 2 | 1 << 6);
-            draw_circfill_mask(left + r, bottom - r, r, col, fillp, 1 << 1 | 1 << 5);
-            draw_circfill_mask(right - r, bottom - r, r, col, fillp, 1 << 0 | 1 << 4);
+            if (col != -1)
+                pencolor_set((byte)color);
+
+            draw_rectfill(left, top + r, right, bottom - r, color, fillp);
+            draw_rectfill(left + r, top, right - r, top + r, color, fillp);
+            draw_rectfill(left + r, bottom - r, right - r, bottom, color, fillp);
+            draw_circfill_mask(left + r, top + r, r, color, fillp, 1 << 3 | 1 << 7);
+            draw_circfill_mask(right - r, top + r, r, color, fillp, 1 << 2 | 1 << 6);
+            draw_circfill_mask(left + r, bottom - r, r, color, fillp, 1 << 1 | 1 << 5);
+            draw_circfill_mask(right - r, bottom - r, r, color, fillp, 1 << 0 | 1 << 4);
 
             return 0;
         }
@@ -1174,13 +1274,25 @@ namespace PicoSharp
         // *** Tables ***
         // ****************************************************************
 
-        // add(tbl, v)
-        public object add(LuaTable tbl, object v)
+        // add(tbl, v, [i])
+        public object add(LuaTable tbl, object v, object _i = null)
         {
             if (tbl == null)
                 return v;
 
-            tbl[tbl.Keys.Count + 1] = v;
+            int count = tbl.Keys.Count;
+
+            if (_i == null)
+            {
+                tbl[count + 1] = v;
+            }
+            else
+            {
+                int i = Convert.ToInt32(_i);
+                for (int j = count; j >= i; j--)
+                    tbl[j + 1] = tbl[j];
+                tbl[i] = v;
+            }
 
             return v;
         }
@@ -1255,7 +1367,7 @@ namespace PicoSharp
 
             int i = Convert.ToInt32(_i);
             int p = (_p != null) ? Convert.ToInt32(_p) : 0;
-            if (p >= PLAYER_COUNT) p = 0;
+            if (p < 0 || p >= PLAYER_COUNT) return false;
             if (i < 0 || i >= BUTTON_COUNT) return false;
 
             return ((m_buttons[p] >> i) & 1) != 0; // bool
@@ -1269,7 +1381,7 @@ namespace PicoSharp
 
             int i = Convert.ToInt32(_i);
             int p = (_p != null) ? Convert.ToInt32(_p) : 0;
-            if (p >= PLAYER_COUNT) p = 0;
+            if (p < 0 || p >= PLAYER_COUNT) return false;
             if (i < 0 || i >= BUTTON_COUNT) return false;
 
             return ((m_buttonsp[p] >> i) & 1) != 0; // bool
@@ -1374,6 +1486,12 @@ namespace PicoSharp
         // ****************************************************************
 
         // cstore(destaddr, sourceaddr, len, [filename])
+        public int cstore(int destaddr, int sourceaddr, int len, string filename = null)
+        {
+            Debug.WriteLine("warning: cstore() is not implemented");
+            return destaddr;
+        }
+
         // memcpy(destaddr, sourceaddr, len)
         public int memcpy(int destaddr, int sourceaddr, int len)
         {
@@ -1493,11 +1611,15 @@ namespace PicoSharp
         }
 
         // reload(destaddr, sourceaddr, len, [filename])
-        public void reload(int destaddr, int sourceaddr, int len)
+        public int reload(int destaddr, int sourceaddr, int len)
         {
             destaddr = addr_remap(destaddr);
             if (m_cart_memory != null && destaddr >= 0 && destaddr + len <= 0x10000 && sourceaddr >= 0 && sourceaddr + len <= CART_MEMORY_SIZE)
+            {
                 Buffer.BlockCopy(m_cart_memory, sourceaddr, m_memory, destaddr, len);
+                return len;
+            }
+            return 0;
         }
 
         // ****************************************************************
@@ -1783,7 +1905,25 @@ namespace PicoSharp
         // extcmd(cmd)
         public void extcmd(string cmd)
         {
-            // stub - pause/reset/shutdown not supported in this environment
+            if (cmd == null) return;
+            switch (cmd)
+            {
+                case "pause":
+                case "reset":
+                case "go_back":
+                case "label":
+                case "screen":
+                case "rec":
+                case "video":
+                case "audio_rec":
+                case "audio_end":
+                case "restart":
+                case "shutdown":
+                    break;
+                default:
+                    Debug.WriteLine("unsupported extcmd command: " + cmd);
+                    break;
+            }
         }
 
         // ****************************************************************
@@ -1792,9 +1932,35 @@ namespace PicoSharp
 
         // assert(cond, [message])
         // printh(str, [filename], [overwrite])
-        public void printh(string str = null, string filename = null, bool overwrite = false)
+        public bool printh(string str = null, string filename = null, bool overwrite = false)
         {
-            Debug.WriteLine(str ?? "");
+            str = str ?? "";
+
+            if (filename == "@clip")
+            {
+                try { System.Windows.Forms.Clipboard.SetText(str); } catch { }
+                return true;
+            }
+
+            if (string.IsNullOrEmpty(filename))
+            {
+                Debug.WriteLine(str);
+                return true;
+            }
+
+            try
+            {
+                if (overwrite)
+                    File.WriteAllText(filename, str + "\n");
+                else
+                    File.AppendAllText(filename, str + "\n");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("printh failed: " + ex.Message);
+                return false;
+            }
         }
 
         // stat(n)
@@ -1843,8 +2009,51 @@ namespace PicoSharp
             }
         }
 
-        // stop() (undocumented)
-        // trace() (undocumented)
+        private bool m_stopped = false;
+
+        // stop([message,] [x,] [y,] [col])
+        public void stop(object _msg = null, object _x = null, object _y = null, object _col = null)
+        {
+            if (_msg != null)
+            {
+                string msg = _msg.ToString();
+                if (_x != null && _y != null)
+                {
+                    int x = Convert.ToInt32(_x);
+                    int y = Convert.ToInt32(_y);
+                    int col = (_col == null) ? pencolor_get() : Convert.ToInt32(_col);
+                    draw_text(msg, x, y, col);
+                }
+                else
+                {
+                    Debug.WriteLine(msg);
+                }
+            }
+            m_stopped = true;
+            m_luaThreadActive = false;
+            throw new NLua.Exceptions.LuaScriptException("stop()", "");
+        }
+
+        // trace([coroutine,] [message,] [skip])
+        public string trace(object _co = null, object _msg = null, object _skip = null)
+        {
+            try
+            {
+                var state = m_lua?.State;
+                if (state == null)
+                    return "";
+                string msg = _msg == null ? null : _msg.ToString();
+                int skip = _skip == null ? 1 : Convert.ToInt32(_skip);
+                state.Traceback(state, msg, skip);
+                string tb = state.ToString(-1);
+                state.Pop(1);
+                return tb ?? "";
+            }
+            catch (Exception ex)
+            {
+                return ex.Message;
+            }
+        }
 
 
         // ****************************************************************
