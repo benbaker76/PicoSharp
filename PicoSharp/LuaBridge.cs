@@ -211,48 +211,29 @@ namespace PicoSharp
                 return 0;
 
             string str = Convert.ToString(_str) ?? string.Empty;
-
-            int w;
+            int newX, newY, right;
 
             // ---- Case 1: print(str [, col])  → 1 or 2 args total
             if (_x == null && _y == null)
             {
-                // get cursor
                 m_emulator.cursor_get(out int x, out int y);
 
-                // choose color (optional)
                 bool colProvided = _col != null;
-                int col = colProvided
-                    ? Convert.ToInt32(_col)
-                    : (m_emulator.pencolor_get() & 0xF);
-
+                int col = colProvided ? Convert.ToInt32(_col) : m_emulator.pencolor_get();
                 if (colProvided)
                     m_emulator.pencolor_set((byte)col);
 
-                // draw
-                w = m_emulator.draw_text(str, x, y, col);
+                bool addNewline = (m_emulator.m_memory[Emulator.MEMORY_MISCFLAGS] & 0x04) == 0;
 
-                // embedded \0 check (len > strlen in C) OR misc flag 0x04
-                bool hasEmbeddedNull = str.IndexOf('\0') >= 0;
-                bool forceInline = (m_emulator.m_memory[Emulator.MEMORY_MISCFLAGS] & 0x04) != 0;
+                m_emulator.draw_text_full(str, x, y, col, m_emulator.left_margin_get(), addNewline,
+                                          out newX, out newY, out right);
 
-                if (hasEmbeddedNull || forceInline)
-                {
-                    x += w;
-                }
-                else
-                {
-                    x = m_emulator.left_margin_get();
-                    y += Emulator.GLYPH_HEIGHT;
-                }
-
-                // update cursor and maybe scroll
-                m_emulator.cursor_set(x, y, -1);
+                m_emulator.cursor_set(newX, newY, -1);
 
                 if ((m_emulator.m_memory[Emulator.MEMORY_MISCFLAGS] & 0x40) == 0)
                     m_emulator.scroll();
 
-                return w;
+                return right;
             }
 
             // ---- Case 2: print(str, x, y [, col])  → 3 or 4 args total
@@ -262,18 +243,13 @@ namespace PicoSharp
                 int y = Convert.ToInt32(_y);
 
                 bool colProvided = _col != null;
-                int col = colProvided
-                    ? Convert.ToInt32(_col)
-                    : (m_emulator.pencolor_get() & 0xF);
-
+                int col = colProvided ? Convert.ToInt32(_col) : m_emulator.pencolor_get();
                 if (colProvided)
                     m_emulator.pencolor_set((byte)col);
 
-                // keep left margin aligned with this x (matches C)
                 m_emulator.left_margin_set(x);
-
-                w = m_emulator.draw_text(str, x, y, col);
-                return w;
+                m_emulator.draw_text_full(str, x, y, col, x, false, out newX, out newY, out right);
+                return right;
             }
 
             return 0;
@@ -410,19 +386,32 @@ namespace PicoSharp
             return 0;
         }
 
-        // tline( x0, y0, x1, y1, mx, my, [mdx,] [mdy])
-        public void tline(object _x0 = null, object _y0 = null, object _x1 = null, object _y1 = null, object _mx = null, object _my = null, object _mdx = null, object _mdy = null)
+        // tline( x0, y0, x1, y1, mx, my, [mdx,] [mdy], [layer])  or  tline(precision)
+        public void tline(object _x0 = null, object _y0 = null, object _x1 = null, object _y1 = null,
+                          object _mx = null, object _my = null, object _mdx = null, object _mdy = null,
+                          object _layer = null)
         {
+            // Single-arg form: tline(precision) — set the m_tline_precision register.
+            if (_x0 != null && _y0 == null && _x1 == null && _y1 == null && _mx == null && _my == null)
+            {
+                m_emulator.tline_set_precision(Convert.ToInt32(_x0));
+                return;
+            }
+
             int x0 = (_x0 == null ? 0 : Convert.ToInt32(_x0));
             int y0 = (_y0 == null ? 0 : Convert.ToInt32(_y0));
             int x1 = (_x1 == null ? 0 : Convert.ToInt32(_x1));
             int y1 = (_y1 == null ? 0 : Convert.ToInt32(_y1));
-            int mx = (_mx == null ? 0 : Convert.ToInt32(_mx));
-            int my = (_my == null ? 0 : Convert.ToInt32(_my));
-            int mdx = (_mdx == null ? 0 : Convert.ToInt32(_mdx));
-            int mdy = (_mdy == null ? 0 : Convert.ToInt32(_mdy));
 
-            m_emulator.tline(x0, y0, x1, y1, mx, my, mdx, mdy);
+            // mx/my/mdx/mdy are fix32 (16.16). Take the full 32-bit fixed value so
+            // fractional steps work correctly (matches femto8's fix32_bits behavior).
+            int mx_bits = _mx == null ? 0 : (int)(Convert.ToDouble(_mx) * 65536.0);
+            int my_bits = _my == null ? 0 : (int)(Convert.ToDouble(_my) * 65536.0);
+            int mdx_bits = _mdx == null ? unchecked((int)(0x2000)) : (int)(Convert.ToDouble(_mdx) * 65536.0); // default 1/8
+            int mdy_bits = _mdy == null ? 0 : (int)(Convert.ToDouble(_mdy) * 65536.0);
+            int layer = (_layer == null ? 0 : Convert.ToInt32(_layer));
+
+            m_emulator.tline(x0, y0, x1, y1, mx_bits, my_bits, mdx_bits, mdy_bits, layer);
         }
 
         // ****************************************************************

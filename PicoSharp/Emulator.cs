@@ -79,6 +79,10 @@ namespace PicoSharp
         public const int MEMORY_SGET_DEFAULT = 0x5f59;
         public const int MEMORY_MGET_DEFAULT = 0x5f5a;
         public const int MEMORY_PGET_DEFAULT = 0x5f5b;
+        // P8SCII print also references these addresses for character sizing.
+        public const int MEMORY_TEXT_CHAR_SIZE = 0x5f59;
+        public const int MEMORY_TEXT_CHAR_SIZE2 = 0x5f5a;
+        public const int MEMORY_TEXT_OFFSET = 0x5f5b;
         public const int MEMORY_AUTO_REPEAT_DELAY = 0x5f5c;
         public const int MEMORY_AUTO_REPEAT_INTERVAL = 0x5f5d;
         public const int MEMORY_RW_MASK = 0x5f5e;
@@ -613,6 +617,8 @@ namespace PicoSharp
                 foreach (string name in m_functionName)
                     RegisterFunction(name);
 
+                RegisterMultiReturnFunctions();
+
                 // Register P8SCII button glyphs as Lua globals (matches femto8)
                 // so that e.g. btnp(⬅️) → btnp(\x8b) → btnp(0)
                 m_lua.DoString("_ENV[string.char(0x8b)]=0");  // ⬅️ left
@@ -675,6 +681,162 @@ namespace PicoSharp
             Type type = m_luaBridge.GetType();
             MethodInfo methodInfo = type.GetMethod(name);
             m_lua.RegisterFunction(name, m_luaBridge, methodInfo);
+        }
+
+        // Keep strong references so the runtime doesn't GC these delegates while
+        // they're still callable from Lua.
+        private readonly List<KeraLua.LuaFunction> m_multiReturnDelegates = new List<KeraLua.LuaFunction>();
+
+        private void RegisterRaw(string name, KeraLua.LuaFunction fn)
+        {
+            m_multiReturnDelegates.Add(fn);
+            var L = m_lua.State;
+            L.PushCFunction(fn);
+            L.SetGlobal(name);
+        }
+
+        private void RegisterMultiReturnFunctions()
+        {
+            // camera([x,] [y]) — returns (prev_x, prev_y)
+            RegisterRaw("camera", (Lp) =>
+            {
+                var L = KeraLua.Lua.FromIntPtr(Lp);
+                int prev_cx, prev_cy;
+                camera_get(out prev_cx, out prev_cy);
+                int top = L.GetTop();
+                int cx = top >= 1 && !L.IsNoneOrNil(1) ? (int)L.ToInteger(1) : 0;
+                int cy = top >= 2 && !L.IsNoneOrNil(2) ? (int)L.ToInteger(2) : 0;
+                camera_set(cx, cy);
+                L.PushInteger(prev_cx);
+                L.PushInteger(prev_cy);
+                return 2;
+            });
+
+            // clip([x,] [y,] [w,] [h,] [clip_previous]) — returns prev (x, y, w, h)
+            RegisterRaw("clip", (Lp) =>
+            {
+                var L = KeraLua.Lua.FromIntPtr(Lp);
+                int prev_x0, prev_y0, prev_x1, prev_y1;
+                clip_get(out prev_x0, out prev_y0, out prev_x1, out prev_y1);
+
+                int top = L.GetTop();
+                if (top == 0)
+                {
+                    clip_set(0, 0, P8_WIDTH, P8_HEIGHT);
+                }
+                else
+                {
+                    int x = (int)L.ToInteger(1);
+                    int y = (int)L.ToInteger(2);
+                    int w = (int)L.ToInteger(3);
+                    int h = (int)L.ToInteger(4);
+                    bool clip_previous = top >= 5 && L.ToBoolean(5);
+
+                    int clamp_x0 = 0, clamp_y0 = 0, clamp_x1 = P8_WIDTH, clamp_y1 = P8_HEIGHT;
+                    if (clip_previous) { clamp_x0 = prev_x0; clamp_y0 = prev_y0; clamp_x1 = prev_x1; clamp_y1 = prev_y1; }
+
+                    int nx1 = x + w;
+                    int ny1 = y + h;
+                    x = Math.Max(x, clamp_x0);
+                    y = Math.Max(y, clamp_y0);
+                    nx1 = Math.Min(nx1, clamp_x1);
+                    ny1 = Math.Min(ny1, clamp_y1);
+
+                    clip_set(x, y, nx1 - x, ny1 - y);
+                }
+
+                L.PushInteger(prev_x0);
+                L.PushInteger(prev_y0);
+                L.PushInteger(prev_x1 - prev_x0);
+                L.PushInteger(prev_y1 - prev_y0);
+                return 4;
+            });
+
+            // color([col]) — returns prev
+            RegisterRaw("color", (Lp) =>
+            {
+                var L = KeraLua.Lua.FromIntPtr(Lp);
+                int prev = pencolor_get();
+                int col = L.GetTop() >= 1 ? (int)L.ToInteger(1) : 6;
+                pencolor_set((byte)col);
+                L.PushInteger(prev);
+                return 1;
+            });
+
+            // cursor([x,] [y,] [col]) — returns (prev_x, prev_y)
+            RegisterRaw("cursor", (Lp) =>
+            {
+                var L = KeraLua.Lua.FromIntPtr(Lp);
+                int prev_x, prev_y;
+                cursor_get(out prev_x, out prev_y);
+                int top = L.GetTop();
+                int x = top >= 1 ? (int)L.ToInteger(1) : 0;
+                int y = top >= 2 ? (int)L.ToInteger(2) : 0;
+                int color = top >= 3 ? (int)L.ToInteger(3) : -1;
+                cursor_set(x, y, color);
+                left_margin_set(x);
+                L.PushInteger(prev_x);
+                L.PushInteger(prev_y);
+                return 2;
+            });
+
+            // pal(c0, c1, [p]) — returns prev mapped colour (when in c0,c1[,p] form)
+            RegisterRaw("pal", (Lp) =>
+            {
+                var L = KeraLua.Lua.FromIntPtr(Lp);
+                int top = L.GetTop();
+
+                if (top == 0)
+                {
+                    reset_color();
+                    return 0;
+                }
+
+                if (top == 1)
+                {
+                    int p1 = (int)L.ToInteger(1);
+                    pal(p1);
+                    return 0;
+                }
+
+                int c0 = (int)L.ToInteger(1);
+                int c1 = (int)L.ToInteger(2);
+                int p = top >= 3 ? (int)L.ToInteger(3) : 0;
+
+                byte old_val = color_get((PaletteType)p, c0);
+                pal(c0, c1, p);
+
+                L.PushInteger(old_val & 0xf);
+                return 1;
+            });
+
+            // palt([col,] [t]) — returns prev transparency (when in col,t form)
+            RegisterRaw("palt", (Lp) =>
+            {
+                var L = KeraLua.Lua.FromIntPtr(Lp);
+                int top = L.GetTop();
+
+                if (top == 0)
+                {
+                    palt(-1, null);
+                    return 0;
+                }
+
+                if (top == 1)
+                {
+                    int col1 = (int)L.ToInteger(1);
+                    palt(col1, null);
+                    return 0;
+                }
+
+                int col = (int)L.ToInteger(1);
+                bool t = L.ToBoolean(2);
+                byte cur = color_get(PaletteType.Draw, col);
+                bool prev_transparent = (cur & 0x10) != 0;
+                palt(col, t);
+                L.PushBoolean(prev_transparent);
+                return 1;
+            });
         }
 
         private int addr_remap(int address)
@@ -831,15 +993,90 @@ namespace PicoSharp
         private bool m_luaFlipPacing = false;
         private Stopwatch m_flipStopwatch = Stopwatch.StartNew();
 
+        // Map output pixel (ox, oy) to source framebuffer pixel based on the 0x5f2c register.
+        private void screen_transform_pixel(byte mode, int ox, int oy, out int sx, out int sy)
+        {
+            switch (mode)
+            {
+                case 1: sx = ox >> 1; sy = oy; break;                  // horizontal stretch
+                case 2: sx = ox; sy = oy >> 1; break;                  // vertical stretch
+                case 3: sx = ox >> 1; sy = oy >> 1; break;             // both stretch
+                case 5: sx = (ox < 64) ? ox : (127 - ox); sy = oy; break; // horizontal mirror
+                case 6: sx = ox; sy = (oy < 64) ? oy : (127 - oy); break; // vertical mirror
+                case 7:
+                    sx = (ox < 64) ? ox : (127 - ox);
+                    sy = (oy < 64) ? oy : (127 - oy);
+                    break;
+                case 129: sx = 127 - ox; sy = oy; break;               // horizontal flip
+                case 130: sx = ox; sy = 127 - oy; break;               // vertical flip
+                case 131: sx = 127 - ox; sy = 127 - oy; break;         // both flip / 180 rotation
+                case 133: sx = 127 - oy; sy = ox; break;               // clockwise 90
+                case 134: sx = 127 - ox; sy = 127 - oy; break;         // 180
+                case 135: sx = oy; sy = 127 - ox; break;               // counterclockwise 90
+                default: sx = ox; sy = oy; break;                      // normal
+            }
+        }
+
+        // Resolve final palette index for a framebuffer pixel given the high-colour mode at 0x5f5f.
+        private byte high_color_resolve(byte hc_mode, byte pix_index, int sx, int sy)
+        {
+            if (hc_mode == 0x10)
+            {
+                // Per-line palette swap via bitfield at 0x5f70..0x5f7f
+                byte bf = m_memory[0x5f70 + (sy >> 3)];
+                if ((bf & (1 << (sy & 7))) != 0)
+                    return color_get(PaletteType.Secondary, pix_index);
+                return color_get(PaletteType.Screen, pix_index);
+            }
+            if (hc_mode == 0x20)
+            {
+                // 5-bitplane mode: hidden right half (sx+64) selects secondary palette.
+                int hidden_offset = (m_memory[MEMORY_SCREEN_PHYS] << 8) + ((sx + 64) >> 1) + sy * 64;
+                byte hidden_val = m_memory[hidden_offset];
+                byte hidden_pix = Tools.IsEven(sx + 64) ? (byte)(hidden_val & 0xF) : (byte)(hidden_val >> 4);
+                if (hidden_pix != 0)
+                    return color_get(PaletteType.Secondary, pix_index);
+                return color_get(PaletteType.Screen, pix_index);
+            }
+            if ((hc_mode & 0xf0) == 0x30)
+            {
+                // Gradient fill: replace color (hc_mode & 0x0f) with per-section gradient.
+                byte replace_color = (byte)(hc_mode & 0x0f);
+                byte screen_index = color_get(PaletteType.Screen, pix_index);
+                if ((screen_index & 0x0f) == replace_color)
+                {
+                    int section = sy >> 3;
+                    byte bf = m_memory[0x5f70 + (sy >> 3)];
+                    if ((bf & (1 << (sy & 7))) != 0)
+                        section = (section + 1) & 0x0f;
+                    return color_get(PaletteType.Secondary, section);
+                }
+                return screen_index;
+            }
+            return color_get(PaletteType.Screen, pix_index);
+        }
+
         public void flip()
         {
+            byte transform = m_memory[MEMORY_SCREEN_TRANSFORM];
+            byte hc_mode = m_memory[MEMORY_HIGH_COLOUR_MODE];
+            int screen_base = m_memory[MEMORY_SCREEN_PHYS] << 8;
+
             for (int y = 0; y < P8_HEIGHT; y++)
             {
                 for (int x = 0; x < P8_WIDTH; x++)
                 {
-                    int screenOffset = MEMORY_SCREEN + (x >> 1) + y * 64;
+                    int sx, sy;
+                    if (transform != 0)
+                        screen_transform_pixel(transform, x, y, out sx, out sy);
+                    else { sx = x; sy = y; }
+
+                    int screenOffset = screen_base + (sx >> 1) + sy * 64;
                     byte value = m_memory[screenOffset];
-                    byte index = color_get(PaletteType.Screen, ((x + 1) % 2 == 0 ? value >> 4 : value & 0xF));
+                    byte pix = Tools.IsEven(sx) ? (byte)(value & 0xF) : (byte)(value >> 4);
+                    byte index = (hc_mode != 0)
+                        ? high_color_resolve(hc_mode, pix, sx, sy)
+                        : color_get(PaletteType.Screen, pix);
                     uint color = m_colors[index & 0xF];
 
                     m_pixelArray[x + (y * 128)] = (int)color;
@@ -1205,55 +1442,116 @@ namespace PicoSharp
 
         // sspr(sx, sy, sw, sh, dx, dy, [dw,] [dh,] [flip_x,] [flip_y])
 
-        // tline( x0, y0, x1, y1, mx, my, [mdx,] [mdy])
-        public int tline(int x0, int y0, int x1, int y1, int mx, int my, int mdx = -1, int mdy = -1)
+        public void tline_set_precision(int precision)
         {
-            // Defaults: mdx = 1/8, mdy = 0 in fixed-point
-            if (mdx == -1)
-            {
-                // (1 << m_tline_precision) / 8 == 1 << (m_tline_precision - 3)
-                mdx = 1 << (m_tline_precision - 3);
-            }
+            m_tline_precision = precision;
+        }
 
-            if (mdy == -1)
-            {
-                mdy = 0;
-            }
+        // tline( x0, y0, x1, y1, mx_bits, my_bits, mdx_bits, mdy_bits, [layer])
+        // mx_bits, my_bits, mdx_bits, mdy_bits are 16.16 fix32 raw integer representations.
+        public int tline(int x0, int y0, int x1, int y1, int mx_bits, int my_bits, int mdx_bits, int mdy_bits, int layer = 0)
+        {
+            int cx, cy;
+            camera_get(out cx, out cy);
+            int clip_x0, clip_y0, clip_x1, clip_y1;
+            clip_get(out clip_x0, out clip_y0, out clip_x1, out clip_y1);
 
-            // Bresenham setup
+            byte map_start = m_memory[MEMORY_MAP_START];
+            bool map_invalid = (map_start >= 0x10 && map_start < 0x20) ||
+                               (map_start >= 0x30 && map_start < 0x3f);
+            byte map_start_upper = map_start;
+            byte map_start_lower = map_start;
+            if (!map_invalid)
+            {
+                if (map_start < 0x10 || (map_start >= 0x40 && map_start < 0x80))
+                    map_start_upper = 0x20;
+                else
+                    map_start_upper = map_start;
+                map_start_lower = (map_start_upper < 0x80) ? (byte)0x10 : map_start_upper;
+            }
+            int map_width = m_memory[MEMORY_MAP_WIDTH];
+            if (map_width == 0) map_width = 256;
+
+            int sprite_base = m_memory[MEMORY_SPRITE_PHYS] << 8;
+            int screen_base = m_memory[MEMORY_SCREEN_PHYS] << 8;
+
+            int offset_x = m_memory[MEMORY_TLINE_OFFSET_X] * 8;
+            int offset_y = m_memory[MEMORY_TLINE_OFFSET_Y] * 8;
+            int precision = m_tline_precision;
+
+            uint mask_x_bits = ((uint)m_memory[MEMORY_TLINE_MASK_X] << (precision + 3)) - 1;
+            uint mask_y_bits = ((uint)m_memory[MEMORY_TLINE_MASK_Y] << (precision + 3)) - 1;
+
             int dx = Math.Abs(x1 - x0);
             int sx = x0 < x1 ? 1 : -1;
             int dy = -Math.Abs(y1 - y0);
             int sy = y0 < y1 ? 1 : -1;
             int err = dx + dy;
 
-            // Fixed-point masks & offsets (match original)
-            int maskXFixed = ((int)m_memory[MEMORY_TLINE_MASK_X] << m_tline_precision) - 1;
-            int maskYFixed = ((int)m_memory[MEMORY_TLINE_MASK_Y] << m_tline_precision) - 1;
-            int offX = m_memory[MEMORY_TLINE_OFFSET_X] * 8;
-            int offY = m_memory[MEMORY_TLINE_OFFSET_Y] * 8;
-
-            const int layer = 0; // original default
+            bool sprite_0_opaque = (m_memory[MEMORY_MISCFLAGS] & 0x8) != 0;
+            byte rw_mask = m_memory[MEMORY_RW_MASK];
 
             while (true)
             {
-                // Wrap texture coordinates with masks (fixed-point)
-                int mxWrapped = mx & maskXFixed;
-                int myWrapped = my & maskYFixed;
+                uint tmx = (uint)mx_bits & mask_x_bits;
+                uint tmy = (uint)my_bits & mask_y_bits;
 
-                int tx = (mxWrapped >> m_tline_precision) + offX;
-                int ty = (myWrapped >> m_tline_precision) + offY;
+                // Arithmetic right shift on signed value
+                int tx_raw = (int)tmx >> precision;
+                int ty_raw = (int)tmy >> precision;
+                int tx = tx_raw + offset_x;
+                int ty = ty_raw + offset_y;
 
-                int index = map_get(tx / 8, ty / 8);
-                byte sprite_flags = m_memory[MEMORY_SPRITEFLAGS + index];
-
-                if (index != 0 && (layer == 0 || ((layer & sprite_flags) == layer)))
+                int celx = tx >> 3;
+                int cely = ty >> 3;
+                int index = 0;
+                // Bounds check on pre-offset coords (PICO-8 behaviour).
+                if (!map_invalid && (tx_raw >> 3) >= 0 && (ty_raw >> 3) >= 0)
                 {
-                    int sxTile = (index & 0xF) * SPRITE_WIDTH;
-                    int syTile = (index >> 4) * SPRITE_HEIGHT;
+                    byte ms = (cely >= 32 && map_start_upper < 0x80) ? map_start_lower : map_start_upper;
+                    int adj_cely = (cely >= 32 && map_start_upper < 0x80) ? cely - 32 : cely;
+                    int address = (ms << 8) + celx + adj_cely * map_width;
+                    if (address >= 0x1000 && address < 0x10000 &&
+                        !(address >= 0x3000 && address < 0x8000))
+                        index = m_memory[address];
+                }
 
-                    int col = gfx_get(sxTile + (tx % 8), syTile + (ty % 8), MEMORY_SPRITES, MEMORY_SPRITES_SIZE);
-                    pixel_set(x0, y0, col, 0, DrawType.Default);
+                byte sprite_flags = m_memory[MEMORY_SPRITEFLAGS + index];
+                if ((index != 0 || sprite_0_opaque) && (layer == 0 || ((layer & sprite_flags) == layer)))
+                {
+                    int spx = (index & 0xF) * 8 + (tx & 7);
+                    int spy = (index >> 4) * 8 + (ty & 7);
+
+                    int spr_offset = sprite_base + (spx >> 1) + spy * 64;
+                    byte col = Tools.IsEven(spx) ? (byte)(m_memory[spr_offset] & 0xF) : (byte)(m_memory[spr_offset] >> 4);
+
+                    byte mapped = color_get(PaletteType.Draw, col & 0xf);
+                    int px = x0 - cx;
+                    int py = y0 - cy;
+                    if ((mapped & 0xf0) == 0)
+                    {
+                        if (px >= clip_x0 && px < clip_x1 && py >= clip_y0 && py < clip_y1)
+                        {
+                            int scr_offset = screen_base + (px >> 1) + py * 64;
+                            if (rw_mask != 0xff)
+                            {
+                                byte write_mask = (byte)(rw_mask & 0xf);
+                                byte read_mask = (byte)((rw_mask >> 4) & 0xf);
+                                byte dst = Tools.IsEven(px) ? (byte)(m_memory[scr_offset] & 0xf) : (byte)(m_memory[scr_offset] >> 4);
+                                byte src = (byte)(mapped & 0xf);
+                                byte result = (byte)((dst & ~write_mask) | (src & write_mask & read_mask));
+                                m_memory[scr_offset] = Tools.IsEven(px)
+                                    ? (byte)((m_memory[scr_offset] & 0xF0) | result)
+                                    : (byte)((result << 4) | (m_memory[scr_offset] & 0xF));
+                            }
+                            else
+                            {
+                                m_memory[scr_offset] = Tools.IsEven(px)
+                                    ? (byte)((m_memory[scr_offset] & 0xF0) | (mapped & 0xF))
+                                    : (byte)((mapped << 4) | (m_memory[scr_offset] & 0xF));
+                            }
+                        }
+                    }
                 }
 
                 if (x0 == x1 && y0 == y1)
@@ -1263,8 +1561,9 @@ namespace PicoSharp
                 if (e2 >= dy) { err += dy; x0 += sx; }
                 if (e2 <= dx) { err += dx; y0 += sy; }
 
-                mx += mdx;
-                my += mdy;
+                // 32-bit unsigned wrap-around on addition (matches fix32 semantics)
+                mx_bits = unchecked(mx_bits + mdx_bits);
+                my_bits = unchecked(my_bits + mdy_bits);
             }
 
             return 0;
